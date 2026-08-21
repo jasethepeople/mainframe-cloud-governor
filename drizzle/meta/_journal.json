@@ -57,6 +57,13 @@
       "when": 1787321745815,
       "tag": "0007_natural_menace",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1787322326609,
+      "tag": "0008_conscious_tombstone",
+      "breakpoints": true
     }
   ]
 }

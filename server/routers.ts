@@ -58,6 +58,19 @@ export const appRouter = router({
       await governanceDb.setScheduleTaskUid(ctx.user.id, created.taskUid);
       return created;
     }),
+    scheduleLocalAgentMonitoring: protectedProcedure.input(z.object({ cron: z.string().regex(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+$/, "Use a six-field UTC cron expression") })).mutation(async ({ ctx, input }) => {
+      const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
+      const settings = await governanceDb.getOrCreateGovernanceSettings(ctx.user.id);
+      if (!settings.releasePublishedAt) throw new Error("Publish and confirm the current release in Production Gate before enabling local-agent monitoring");
+      const jobDefinition = { cron: input.cron, path: "/api/scheduled/local-agent-readiness", payload: {}, description: "Evaluate local-agent receipt freshness and record readiness alerts." };
+      if (settings.agentMonitoringCronTaskUid) {
+        const updated = await updateHeartbeatJob(settings.agentMonitoringCronTaskUid, jobDefinition, sessionToken);
+        return { taskUid: settings.agentMonitoringCronTaskUid, nextExecutionAt: updated.nextExecutionAt };
+      }
+      const created = await createHeartbeatJob({ name: `local-agent-readiness-${ctx.user.id}`, ...jobDefinition }, sessionToken);
+      await governanceDb.setAgentMonitoringTaskUid(ctx.user.id, created.taskUid);
+      return created;
+    }),
     confirmPublishedRelease: protectedProcedure.mutation(({ ctx }) => governanceDb.confirmPublishedRelease(ctx.user.id)),
     connections: protectedProcedure.query(({ ctx }) => governanceDb.listCloudConnections(ctx.user.id)),
     providerReadiness: protectedProcedure.query(({ ctx }) => governanceDb.getProviderReadiness(ctx.user.id)),
@@ -110,8 +123,12 @@ export const appRouter = router({
     })).mutation(({ ctx, input }) => governanceDb.createSiemForwardingProfile(ctx.user.id, input)),
     localAgentKeys: protectedProcedure.query(({ ctx }) => governanceDb.listLocalAgentKeys(ctx.user.id)),
     localAgentReadiness: protectedProcedure.query(({ ctx }) => governanceDb.getLocalAgentReadiness(ctx.user.id)),
+    evaluateLocalAgentReadiness: protectedProcedure.mutation(({ ctx }) => governanceDb.evaluateLocalAgentReadiness(ctx.user.id)),
+    localAgentReadinessAlerts: protectedProcedure.query(({ ctx }) => governanceDb.listLocalAgentReadinessAlerts(ctx.user.id)),
+    acknowledgeLocalAgentReadinessAlert: protectedProcedure.input(z.object({ alertId: z.number().int().positive() })).mutation(({ ctx, input }) => governanceDb.acknowledgeLocalAgentReadinessAlert(ctx.user.id, input.alertId)),
     registerLocalAgentKey: protectedProcedure.input(z.object({ agentId: z.string().trim().min(3).max(100), publicKeyJwk: z.string().min(20).max(20_000) })).mutation(({ ctx, input }) => governanceDb.registerLocalAgentKey(ctx.user.id, input.agentId, input.publicKeyJwk)),
     revokeLocalAgentKey: protectedProcedure.input(z.object({ keyId: z.number().int().positive() })).mutation(({ ctx, input }) => governanceDb.revokeLocalAgentKey(ctx.user.id, input.keyId)),
+    updateLocalAgentOwnership: protectedProcedure.input(z.object({ keyId: z.number().int().positive(), operationalOwnerName: z.string().trim().min(2).max(120), operationalOwnerEmail: z.string().trim().email().max(320) })).mutation(({ ctx, input }) => governanceDb.updateLocalAgentOwnership(ctx.user.id, input.keyId, input.operationalOwnerName, input.operationalOwnerEmail)),
     rotateLocalAgentKey: protectedProcedure.input(z.object({ retiringKeyId: z.number().int().positive(), agentId: z.string().trim().min(3).max(100), publicKeyJwk: z.string().min(20).max(20_000) })).mutation(({ ctx, input }) => governanceDb.rotateLocalAgentKey(ctx.user.id, input.retiringKeyId, input.agentId, input.publicKeyJwk)),
     localAgentJobs: protectedProcedure.query(({ ctx }) => governanceDb.listLocalAgentJobs(ctx.user.id)),
     queueLocalAgentJob: protectedProcedure.input(z.object({ agentKeyId: z.number().int().positive(), jobType: z.enum(["aws_read_only_discovery", "generic_https_siem_delivery", "health_check"]) })).mutation(({ ctx, input }) => governanceDb.queueLocalAgentJob(ctx.user.id, input.agentKeyId, input.jobType)),

@@ -10,6 +10,7 @@ import {
   InsertUser,
   localAgentJobs,
   localAgentKeys,
+  localAgentReadinessAlerts,
   mockResources,
   providerOnboarding,
   shredListItems,
@@ -23,6 +24,8 @@ import { calculateFeeCents, DEFAULT_FEE_RATE_BPS, DEFAULT_MIN_MONTHLY_COST_CENTS
 import { getProviderAdapterReadiness } from "./providerAdapters";
 import { canExtendAuditRetention } from "./productionGovernance.logic";
 import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, canIssueLocalAgentJob, deriveLocalAgentReadiness, hashManifest, planLocalAgentKeyRotation, type LocalAgentJobType, verifyLocalAgentReceipt } from "./localAgent.logic";
+import { buildAgentReadinessAlert } from "./organizationAgent.logic";
+import { notifyOwner } from "./_core/notification";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -157,6 +160,13 @@ export async function confirmPublishedRelease(userId: number) {
   return getOrCreateGovernanceSettings(userId);
 }
 
+export async function setAgentMonitoringTaskUid(userId: number, taskUid: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  await db.update(governanceSettings).set({ agentMonitoringCronTaskUid: taskUid }).where(eq(governanceSettings.userId, userId));
+  return getOrCreateGovernanceSettings(userId);
+}
+
 export async function runScheduledAnalysisByTaskUid(taskUid: string) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
@@ -244,7 +254,17 @@ export async function registerLocalAgentKey(userId: number, agentId: string, pub
 export async function listLocalAgentKeys(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  return db.select({ id: localAgentKeys.id, agentId: localAgentKeys.agentId, status: localAgentKeys.status, createdAt: localAgentKeys.createdAt, revokedAt: localAgentKeys.revokedAt }).from(localAgentKeys).where(eq(localAgentKeys.userId, userId)).orderBy(desc(localAgentKeys.createdAt));
+  return db.select({ id: localAgentKeys.id, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName, operationalOwnerEmail: localAgentKeys.operationalOwnerEmail, status: localAgentKeys.status, createdAt: localAgentKeys.createdAt, revokedAt: localAgentKeys.revokedAt }).from(localAgentKeys).where(eq(localAgentKeys.userId, userId)).orderBy(desc(localAgentKeys.createdAt));
+}
+
+export async function updateLocalAgentOwnership(userId: number, keyId: number, operationalOwnerName: string, operationalOwnerEmail: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const key = await db.select({ id: localAgentKeys.id, agentId: localAgentKeys.agentId }).from(localAgentKeys).where(and(eq(localAgentKeys.id, keyId), eq(localAgentKeys.userId, userId))).limit(1);
+  if (!key[0]) throw new Error("Local-agent key was not found");
+  await db.update(localAgentKeys).set({ operationalOwnerName, operationalOwnerEmail }).where(eq(localAgentKeys.id, keyId));
+  await recordAuditEvent(userId, userId, "local_agent_owner_assigned", "local_agent_key", keyId, `Assigned ${operationalOwnerName} as operational owner for local agent ${key[0].agentId}.`, { operationalOwnerEmail });
+  return listLocalAgentKeys(userId);
 }
 
 export async function revokeLocalAgentKey(userId: number, keyId: number) {
@@ -317,6 +337,52 @@ export async function getLocalAgentReadiness(userId: number) {
   const lastHealthCheck = jobs.find(job => job.jobType === "health_check" && job.status === "completed")?.completedAt ?? null;
   const state = deriveLocalAgentReadiness({ activeAgentCount, lastVerifiedReceipt, lastHealthCheck });
   return { state, activeAgentCount, lastVerifiedReceipt, lastHealthCheck } as const;
+}
+
+export async function evaluateLocalAgentReadiness(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const [readiness, keys] = await Promise.all([getLocalAgentReadiness(userId), listLocalAgentKeys(userId)]);
+  const activeKey = keys.find(key => key.status === "active") ?? null;
+  const alert = buildAgentReadinessAlert(readiness.state, activeKey?.operationalOwnerName ?? null);
+  if (!alert) {
+    await db.update(localAgentReadinessAlerts).set({ status: "resolved", resolvedAt: new Date() }).where(and(eq(localAgentReadinessAlerts.userId, userId), eq(localAgentReadinessAlerts.status, "open")));
+    return { readiness, alert: null } as const;
+  }
+  const existing = await db.select({ id: localAgentReadinessAlerts.id }).from(localAgentReadinessAlerts).where(and(eq(localAgentReadinessAlerts.userId, userId), eq(localAgentReadinessAlerts.alertType, alert.alertType), eq(localAgentReadinessAlerts.status, "open"))).limit(1);
+  if (existing[0]) return { readiness, alert: { id: existing[0].id, ...alert, created: false } } as const;
+  const result = await db.insert(localAgentReadinessAlerts).values({ userId, agentKeyId: activeKey?.id ?? null, alertType: alert.alertType, summary: alert.summary });
+  const id = Number(result[0].insertId);
+  await recordAuditEvent(userId, null, "local_agent_readiness_alert_created", "local_agent_readiness_alert", id, alert.summary);
+  try { await notifyOwner({ title: `Local-agent readiness: ${alert.alertType.replaceAll("_", " ")}`, content: alert.summary }); } catch (error) { console.warn("[Local agent readiness] Owner notification could not be delivered", error); }
+  return { readiness, alert: { id, ...alert, created: true } } as const;
+}
+
+export async function evaluateLocalAgentReadinessByTaskUid(taskUid: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const settings = await db.select({ userId: governanceSettings.userId }).from(governanceSettings).where(eq(governanceSettings.agentMonitoringCronTaskUid, taskUid)).limit(1);
+  if (!settings[0]) return { skipped: "orphan" } as const;
+  const result = await evaluateLocalAgentReadiness(settings[0].userId);
+  return { skipped: false, ownerUserId: settings[0].userId, ...result } as const;
+}
+
+export async function listLocalAgentReadinessAlerts(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select({ id: localAgentReadinessAlerts.id, alertType: localAgentReadinessAlerts.alertType, status: localAgentReadinessAlerts.status, summary: localAgentReadinessAlerts.summary, createdAt: localAgentReadinessAlerts.createdAt, acknowledgedAt: localAgentReadinessAlerts.acknowledgedAt, resolvedAt: localAgentReadinessAlerts.resolvedAt, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName }).from(localAgentReadinessAlerts).leftJoin(localAgentKeys, eq(localAgentReadinessAlerts.agentKeyId, localAgentKeys.id)).where(eq(localAgentReadinessAlerts.userId, userId)).orderBy(desc(localAgentReadinessAlerts.createdAt));
+}
+
+export async function acknowledgeLocalAgentReadinessAlert(userId: number, alertId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const alert = await db.select({ id: localAgentReadinessAlerts.id, summary: localAgentReadinessAlerts.summary, status: localAgentReadinessAlerts.status }).from(localAgentReadinessAlerts).where(and(eq(localAgentReadinessAlerts.id, alertId), eq(localAgentReadinessAlerts.userId, userId))).limit(1);
+  if (!alert[0]) throw new Error("Readiness alert was not found");
+  if (alert[0].status === "open") {
+    await db.update(localAgentReadinessAlerts).set({ status: "acknowledged", acknowledgedAt: new Date() }).where(eq(localAgentReadinessAlerts.id, alertId));
+    await recordAuditEvent(userId, userId, "local_agent_readiness_alert_acknowledged", "local_agent_readiness_alert", alertId, `Acknowledged local-agent readiness alert: ${alert[0].summary}`);
+  }
+  return listLocalAgentReadinessAlerts(userId);
 }
 
 export async function recordAuditEvent(ownerUserId: number, actorUserId: number | null, eventType: string, entityType: string, entityId: number | null, summary: string, payload?: unknown) {

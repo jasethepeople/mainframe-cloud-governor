@@ -56,3 +56,10 @@
 - [x] Extend local-agent readiness to flag missing or stale verified receipts using an explicit freshness threshold.
 - [x] Add and run automated readiness state-transition tests for no key, health-check required, ready, and stale receipt conditions.
 - [x] Save the verified local-agent hardening checkpoint.
+- [x] Add organization ownership metadata and named operational contacts for local-agent identities.
+- [x] Add stale-receipt monitoring records and alert states for zero-trust local-agent readiness.
+- [x] Add an organization operations panel for ownership, freshness, and alert acknowledgement.
+- [x] Add and run automated tests for ownership assignment and stale-receipt alert rules.
+- [x] Verify organization operations controls and save an updated checkpoint.
+- [x] Add a protected ownership-assignment workflow test covering the organization agent API contract.
+- [x] Save the verified organization operations checkpoint.

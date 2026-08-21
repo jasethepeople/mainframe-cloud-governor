@@ -8,6 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { scheduledShredAnalysisHandler } from "../scheduledAnalysis";
+import { scheduledAgentMonitoringHandler } from "../scheduledAgentMonitoring";
 import { serveStatic, setupVite } from "./vite";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -38,6 +39,7 @@ async function startServer() {
   registerStorageProxy(app);
   registerOAuthRoutes(app);
   app.post("/api/scheduled/shred-analysis", scheduledShredAnalysisHandler);
+  app.post("/api/scheduled/local-agent-readiness", scheduledAgentMonitoringHandler);
   // tRPC API
   app.use(
     "/api/trpc",

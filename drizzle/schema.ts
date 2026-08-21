@@ -51,6 +51,7 @@ export const governanceSettings = mysqlTable("governanceSettings", {
   requiredApprovalCount: int("requiredApprovalCount").notNull().default(1),
   auditRetentionDays: int("auditRetentionDays").notNull().default(365),
   releasePublishedAt: timestamp("releasePublishedAt"),
+  agentMonitoringCronTaskUid: varchar("agentMonitoringCronTaskUid", { length: 65 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -172,6 +173,8 @@ export const localAgentKeys = mysqlTable("localAgentKeys", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull().references(() => users.id),
   agentId: varchar("agentId", { length: 100 }).notNull(),
+  operationalOwnerName: varchar("operationalOwnerName", { length: 120 }).notNull().default("Unassigned"),
+  operationalOwnerEmail: varchar("operationalOwnerEmail", { length: 320 }).notNull().default("unassigned@example.invalid"),
   publicKeyJwk: text("publicKeyJwk").notNull(),
   status: mysqlEnum("status", ["active", "revoked"]).notNull().default("active"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -193,6 +196,18 @@ export const localAgentJobs = mysqlTable("localAgentJobs", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const localAgentReadinessAlerts = mysqlTable("localAgentReadinessAlerts", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  agentKeyId: int("agentKeyId").references(() => localAgentKeys.id),
+  alertType: mysqlEnum("alertType", ["no_active_key", "health_check_required", "receipt_stale"]).notNull(),
+  status: mysqlEnum("status", ["open", "acknowledged", "resolved"]).notNull().default("open"),
+  summary: varchar("summary", { length: 500 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  acknowledgedAt: timestamp("acknowledgedAt"),
+  resolvedAt: timestamp("resolvedAt"),
+});
+
 export type CloudConnection = typeof cloudConnections.$inferSelect;
 export type GovernanceSettings = typeof governanceSettings.$inferSelect;
 export type MockResource = typeof mockResources.$inferSelect;
@@ -207,3 +222,4 @@ export type ProviderOnboarding = typeof providerOnboarding.$inferSelect;
 export type SiemForwardingProfile = typeof siemForwardingProfiles.$inferSelect;
 export type LocalAgentKey = typeof localAgentKeys.$inferSelect;
 export type LocalAgentJob = typeof localAgentJobs.$inferSelect;
+export type LocalAgentReadinessAlert = typeof localAgentReadinessAlerts.$inferSelect;
