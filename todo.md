@@ -63,3 +63,15 @@
 - [x] Verify organization operations controls and save an updated checkpoint.
 - [x] Add a protected ownership-assignment workflow test covering the organization agent API contract.
 - [x] Save the verified organization operations checkpoint.
+- [x] Add configurable escalation routing profiles with zero-trust credential handling and safe endpoint validation.
+- [x] Add incident ownership handoff, escalation state, and append-only response audit events for local-agent readiness alerts.
+- [x] Add escalation operations controls for routing readiness, incident assignment, and manual delivery testing.
+- [x] Add and run automated tests for escalation routing and incident handoff logic.
+- [x] Verify escalation operations controls and save an updated checkpoint.
+- [x] Add explicit escalation-state transitions for local-agent readiness incidents and surface the current state in operations controls.
+- [x] Add protected incident-handoff contract tests covering assignee, optional route linkage, and append-only event behavior.
+- [x] Save the verified escalation operations checkpoint.
+- [x] Add an end-to-end handoff persistence test for assignee fields, optional route linkage, and append-only escalation-event creation.
+- [x] Save the fully verified escalation-state and routing checkpoint.
+- [x] Add an integration-style handoff persistence-adapter test that verifies alert update, optional route linkage, and append-only event insertion calls.
+- [x] Save the final verified escalation-state and routing checkpoint.

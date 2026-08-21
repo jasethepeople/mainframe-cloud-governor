@@ -7,10 +7,12 @@ import {
   governanceApprovers,
   governanceAuditEvents,
   governanceSettings,
+  incidentEscalationProfiles,
   InsertUser,
   localAgentJobs,
   localAgentKeys,
   localAgentReadinessAlerts,
+  localAgentEscalationEvents,
   mockResources,
   providerOnboarding,
   shredListItems,
@@ -26,6 +28,8 @@ import { canExtendAuditRetention } from "./productionGovernance.logic";
 import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, canIssueLocalAgentJob, deriveLocalAgentReadiness, hashManifest, planLocalAgentKeyRotation, type LocalAgentJobType, verifyLocalAgentReceipt } from "./localAgent.logic";
 import { buildAgentReadinessAlert } from "./organizationAgent.logic";
 import { notifyOwner } from "./_core/notification";
+import { buildIncidentHandoffPersistencePlan, buildManualEscalationTestPayload, type EscalationProvider } from "./escalation.logic";
+import { persistIncidentHandoff } from "./escalationHandoff.persistence";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -370,7 +374,70 @@ export async function evaluateLocalAgentReadinessByTaskUid(taskUid: string) {
 export async function listLocalAgentReadinessAlerts(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  return db.select({ id: localAgentReadinessAlerts.id, alertType: localAgentReadinessAlerts.alertType, status: localAgentReadinessAlerts.status, summary: localAgentReadinessAlerts.summary, createdAt: localAgentReadinessAlerts.createdAt, acknowledgedAt: localAgentReadinessAlerts.acknowledgedAt, resolvedAt: localAgentReadinessAlerts.resolvedAt, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName }).from(localAgentReadinessAlerts).leftJoin(localAgentKeys, eq(localAgentReadinessAlerts.agentKeyId, localAgentKeys.id)).where(eq(localAgentReadinessAlerts.userId, userId)).orderBy(desc(localAgentReadinessAlerts.createdAt));
+  return db.select({ id: localAgentReadinessAlerts.id, alertType: localAgentReadinessAlerts.alertType, status: localAgentReadinessAlerts.status, escalationState: localAgentReadinessAlerts.escalationState, summary: localAgentReadinessAlerts.summary, assigneeName: localAgentReadinessAlerts.assigneeName, assigneeEmail: localAgentReadinessAlerts.assigneeEmail, createdAt: localAgentReadinessAlerts.createdAt, acknowledgedAt: localAgentReadinessAlerts.acknowledgedAt, resolvedAt: localAgentReadinessAlerts.resolvedAt, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName }).from(localAgentReadinessAlerts).leftJoin(localAgentKeys, eq(localAgentReadinessAlerts.agentKeyId, localAgentKeys.id)).where(eq(localAgentReadinessAlerts.userId, userId)).orderBy(desc(localAgentReadinessAlerts.createdAt));
+}
+
+export async function createIncidentEscalationProfile(userId: number, values: { provider: EscalationProvider; label: string; endpointHost: string; encryptedConfiguration: string; cryptoMetadata: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const result = await db.insert(incidentEscalationProfiles).values({ userId, ...values });
+  const id = Number(result[0].insertId);
+  await recordAuditEvent(userId, userId, "escalation_route_sealed", "incident_escalation_profile", id, `Sealed ${values.provider.replaceAll("_", " ")} escalation route ${values.label}.`, { endpointHost: values.endpointHost });
+  return { id };
+}
+
+export async function listIncidentEscalationProfiles(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select({ id: incidentEscalationProfiles.id, provider: incidentEscalationProfiles.provider, label: incidentEscalationProfiles.label, endpointHost: incidentEscalationProfiles.endpointHost, status: incidentEscalationProfiles.status, createdAt: incidentEscalationProfiles.createdAt, updatedAt: incidentEscalationProfiles.updatedAt }).from(incidentEscalationProfiles).where(eq(incidentEscalationProfiles.userId, userId)).orderBy(desc(incidentEscalationProfiles.createdAt));
+}
+
+export async function handoffLocalAgentReadinessAlert(userId: number, alertId: number, assigneeName: string, assigneeEmail: string, escalationProfileId?: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const alert = await db.select({ id: localAgentReadinessAlerts.id, summary: localAgentReadinessAlerts.summary }).from(localAgentReadinessAlerts).where(and(eq(localAgentReadinessAlerts.id, alertId), eq(localAgentReadinessAlerts.userId, userId))).limit(1);
+  if (!alert[0]) throw new Error("Readiness alert was not found");
+  if (escalationProfileId) {
+    const profile = await db.select({ id: incidentEscalationProfiles.id }).from(incidentEscalationProfiles).where(and(eq(incidentEscalationProfiles.id, escalationProfileId), eq(incidentEscalationProfiles.userId, userId))).limit(1);
+    if (!profile[0]) throw new Error("Escalation profile was not found");
+  }
+  await persistIncidentHandoff({
+    updateAlert: async update => { await db.update(localAgentReadinessAlerts).set(update).where(eq(localAgentReadinessAlerts.id, alertId)); },
+    appendEscalationEvent: async event => { await db.insert(localAgentEscalationEvents).values({ userId, alertId, escalationProfileId: event.escalationProfileId, eventType: event.eventType, summary: event.summary }); },
+    appendAuditEvent: async event => { await recordAuditEvent(userId, userId, "local_agent_incident_handed_off", "local_agent_readiness_alert", alertId, event.summary, { escalationProfileId: event.escalationProfileId }); },
+  }, assigneeName, assigneeEmail, escalationProfileId);
+  return listLocalAgentReadinessAlerts(userId);
+}
+
+export async function completeLocalAgentEscalation(userId: number, alertId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const alert = await db.select({ id: localAgentReadinessAlerts.id, escalationState: localAgentReadinessAlerts.escalationState, summary: localAgentReadinessAlerts.summary }).from(localAgentReadinessAlerts).where(and(eq(localAgentReadinessAlerts.id, alertId), eq(localAgentReadinessAlerts.userId, userId))).limit(1);
+  if (!alert[0]) throw new Error("Readiness alert was not found");
+  if (alert[0].escalationState !== "handoff_recorded") throw new Error("Record an incident handoff before completing escalation response");
+  await db.update(localAgentReadinessAlerts).set({ escalationState: "response_complete" }).where(eq(localAgentReadinessAlerts.id, alertId));
+  await recordAuditEvent(userId, userId, "local_agent_escalation_response_completed", "local_agent_readiness_alert", alertId, `Completed escalation response for readiness incident: ${alert[0].summary}`);
+  return listLocalAgentReadinessAlerts(userId);
+}
+
+export async function prepareEscalationManualTest(userId: number, profileId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const profile = await db.select({ id: incidentEscalationProfiles.id, provider: incidentEscalationProfiles.provider, endpointHost: incidentEscalationProfiles.endpointHost }).from(incidentEscalationProfiles).where(and(eq(incidentEscalationProfiles.id, profileId), eq(incidentEscalationProfiles.userId, userId))).limit(1);
+  if (!profile[0]) throw new Error("Escalation profile was not found");
+  const payload = buildManualEscalationTestPayload(profile[0].provider, profile[0].endpointHost);
+  await recordAuditEvent(userId, userId, "escalation_manual_test_prepared", "incident_escalation_profile", profileId, `Prepared a credential-free manual delivery test for ${profile[0].endpointHost}.`, payload);
+  return payload;
+}
+
+export async function recordEscalationManualTest(userId: number, profileId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const profile = await db.select({ id: incidentEscalationProfiles.id, label: incidentEscalationProfiles.label }).from(incidentEscalationProfiles).where(and(eq(incidentEscalationProfiles.id, profileId), eq(incidentEscalationProfiles.userId, userId))).limit(1);
+  if (!profile[0]) throw new Error("Escalation profile was not found");
+  await db.update(incidentEscalationProfiles).set({ status: "manual_tested" }).where(eq(incidentEscalationProfiles.id, profileId));
+  await recordAuditEvent(userId, userId, "escalation_manual_test_recorded", "incident_escalation_profile", profileId, `Recorded a local delivery test for escalation route ${profile[0].label}.`);
+  return listIncidentEscalationProfiles(userId);
 }
 
 export async function acknowledgeLocalAgentReadinessAlert(userId: number, alertId: number) {

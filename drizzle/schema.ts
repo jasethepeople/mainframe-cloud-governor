@@ -203,9 +203,35 @@ export const localAgentReadinessAlerts = mysqlTable("localAgentReadinessAlerts",
   alertType: mysqlEnum("alertType", ["no_active_key", "health_check_required", "receipt_stale"]).notNull(),
   status: mysqlEnum("status", ["open", "acknowledged", "resolved"]).notNull().default("open"),
   summary: varchar("summary", { length: 500 }).notNull(),
+  assigneeName: varchar("assigneeName", { length: 120 }),
+  assigneeEmail: varchar("assigneeEmail", { length: 320 }),
+  escalationState: mysqlEnum("escalationState", ["unrouted", "handoff_recorded", "response_complete"]).notNull().default("unrouted"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   acknowledgedAt: timestamp("acknowledgedAt"),
   resolvedAt: timestamp("resolvedAt"),
+});
+
+export const incidentEscalationProfiles = mysqlTable("incidentEscalationProfiles", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  provider: mysqlEnum("provider", ["generic_https", "slack_webhook", "pagerduty_events"]).notNull(),
+  label: varchar("label", { length: 100 }).notNull(),
+  endpointHost: varchar("endpointHost", { length: 255 }).notNull(),
+  encryptedConfiguration: text("encryptedConfiguration").notNull(),
+  cryptoMetadata: text("cryptoMetadata").notNull(),
+  status: mysqlEnum("status", ["sealed", "manual_tested", "disabled"]).notNull().default("sealed"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const localAgentEscalationEvents = mysqlTable("localAgentEscalationEvents", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  alertId: int("alertId").notNull().references(() => localAgentReadinessAlerts.id),
+  escalationProfileId: int("escalationProfileId").references(() => incidentEscalationProfiles.id),
+  eventType: mysqlEnum("eventType", ["handoff", "manual_test_prepared", "manual_test_recorded"]).notNull(),
+  summary: varchar("summary", { length: 500 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export type CloudConnection = typeof cloudConnections.$inferSelect;
@@ -223,3 +249,5 @@ export type SiemForwardingProfile = typeof siemForwardingProfiles.$inferSelect;
 export type LocalAgentKey = typeof localAgentKeys.$inferSelect;
 export type LocalAgentJob = typeof localAgentJobs.$inferSelect;
 export type LocalAgentReadinessAlert = typeof localAgentReadinessAlerts.$inferSelect;
+export type IncidentEscalationProfile = typeof incidentEscalationProfiles.$inferSelect;
+export type LocalAgentEscalationEvent = typeof localAgentEscalationEvents.$inferSelect;

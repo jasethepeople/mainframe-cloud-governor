@@ -1,0 +1,1 @@
+ALTER TABLE `localAgentReadinessAlerts` ADD `escalationState` enum('unrouted','handoff_recorded','response_complete') DEFAULT 'unrouted' NOT NULL;

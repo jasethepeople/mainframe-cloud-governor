@@ -64,6 +64,20 @@
       "when": 1787322326609,
       "tag": "0008_conscious_tombstone",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1787322868738,
+      "tag": "0009_lying_tomas",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1787323114705,
+      "tag": "0010_mysterious_abomination",
+      "breakpoints": true
     }
   ]
 }
