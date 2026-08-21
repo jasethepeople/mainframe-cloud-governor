@@ -5,6 +5,7 @@ import { EscalationOperationsPanel } from "@/components/EscalationOperationsPane
 import { EscalationStateSummaryPanel } from "@/components/EscalationStateSummaryPanel";
 import { IncidentSlaOperationsPanel } from "@/components/IncidentSlaOperationsPanel";
 import { SlaBreachEscalationPanel } from "@/components/SlaBreachEscalationPanel";
+import { BreachDispatchOperationsPanel } from "@/components/BreachDispatchOperationsPanel";
 import { trpc } from "@/lib/trpc";
 import { Cable, ClipboardCopy, KeyRound, LockKeyhole, RadioTower, Send, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
@@ -37,7 +38,7 @@ export function ProductionReadinessPanel() {
   const [label, setLabel] = useState(""); const [endpointHost, setEndpointHost] = useState(""); const [ingestSecret, setIngestSecret] = useState(""); const [passphrase, setPassphrase] = useState("");
   const [agentId, setAgentId] = useState("governor-local-agent"); const [publicKeyJwk, setPublicKeyJwk] = useState(""); const [selectedAgentKey, setSelectedAgentKey] = useState(""); const [receiptJobId, setReceiptJobId] = useState(""); const [receipt, setReceipt] = useState(""); const [receiptSignature, setReceiptSignature] = useState(""); const [latestManifest, setLatestManifest] = useState("");
   useEffect(() => { if (settings.data) setRetentionDays(String(settings.data.auditRetentionDays)); }, [settings.data]);
-  const refresh = async () => { await Promise.all([utils.governance.providerOnboarding.invalidate(), utils.governance.siemProfiles.invalidate(), utils.governance.settings.invalidate(), utils.governance.auditEvents.invalidate(), utils.governance.localAgentKeys.invalidate(), utils.governance.localAgentJobs.invalidate(), utils.governance.localAgentReadiness.invalidate()]); };
+  const refresh = async () => { await Promise.all([utils.governance.providerOnboarding.invalidate(), utils.governance.siemProfiles.invalidate(), utils.governance.settings.invalidate(), utils.governance.auditEvents.invalidate(), utils.governance.localAgentKeys.invalidate(), utils.governance.localAgentJobs.invalidate(), utils.governance.localAgentReadiness.invalidate(), utils.governance.slaBreachDispatchTimeline.invalidate()]); };
   const prepare = async () => { try { await prepareProvider.mutateAsync({ provider, readOnlyProfile: profiles[provider] }); await refresh(); toast.success(`${provider.toUpperCase()} ONBOARDING PREPARED // CONNECTOR REQUIRED`); } catch (error) { toast.error(error instanceof Error ? error.message : "Provider onboarding could not be prepared"); } };
   const preserveAudit = async (event: FormEvent) => { event.preventDefault(); try { await updateSettings.mutateAsync({ auditRetentionDays: Number(retentionDays) }); await refresh(); toast.success("IMMUTABLE AUDIT RETENTION EXTENDED"); } catch (error) { toast.error(error instanceof Error ? error.message : "Audit retention could not be updated"); } };
   const sealSiem = async (event: FormEvent) => { event.preventDefault(); try { const sealed = await encryptCloudCredential(JSON.stringify({ ingestSecret, endpointHost }), passphrase); await addSiem.mutateAsync({ provider: siemProvider, label, endpointHost, encryptedConfiguration: sealed.encryptedCredential, cryptoMetadata: sealed.cryptoMetadata }); setLabel(""); setEndpointHost(""); setIngestSecret(""); setPassphrase(""); await refresh(); toast.success("SIEM PROFILE SEALED // CONNECTOR VALIDATION REQUIRED"); } catch (error) { toast.error(error instanceof Error ? error.message : "SIEM profile could not be sealed"); } };
@@ -60,6 +61,7 @@ export function ProductionReadinessPanel() {
     <EscalationStateSummaryPanel />
     <IncidentSlaOperationsPanel />
     <SlaBreachEscalationPanel />
+    <BreachDispatchOperationsPanel />
     <section className="terminal-panel production-panel"><h2 className="panel-title"><b>CHK</b><span>OPERATOR VALIDATION STATUS</span></h2><div className="retention-readout"><ShieldCheck size={18} /><div><strong>{(localAgentReadiness.data?.state ?? "loading").replaceAll("_", " ").toUpperCase()}</strong><small>{localAgentReadiness.data?.state === "ready" ? `LAST VERIFIED ${new Date(localAgentReadiness.data.lastHealthCheck!).toLocaleString()}` : localAgentReadiness.data?.state === "no_active_key" ? "ACTION REQUIRED: REGISTER AN ACTIVE LOCAL-AGENT PUBLIC KEY." : localAgentReadiness.data?.state === "receipt_stale" ? "ACTION REQUIRED: A VERIFIED RECEIPT IS OLDER THAN 24 HOURS; QUEUE A FRESH HEALTH CHECK." : "ACTION REQUIRED: QUEUE AND VERIFY A CREDENTIAL-FREE SIGNED HEALTH CHECK."}</small></div></div><p>A health check verifies the agent identity, manifest-expiry guard, and receipt signing without invoking AWS or the configured SIEM endpoint.</p><button type="button" className="mainframe-button mainframe-button--primary" onClick={() => queueJob("health_check")} disabled={queueAgentJob.isPending}><ShieldCheck size={16} /> QUEUE SIGNED HEALTH CHECK</button></section>
   </>;
 }

@@ -87,3 +87,8 @@
 - [x] Add breach escalation controls that require a manually tested sealed route before activation.
 - [x] Add and run automated tests for breach eligibility and dispatch contract behavior.
 - [x] Verify safeguarded automated escalation controls and save an updated checkpoint.
+- [x] Add breach-dispatch receipt confirmation evidence to the incident workflow.
+- [x] Add a downloadable sealed-route operator runbook snippet with local configuration guidance.
+- [x] Add filterable breach-dispatch timeline visibility for prepared and completed deliveries.
+- [x] Add and run automated tests for breach receipt confirmation and timeline behavior.
+- [x] Verify the extended breach operations controls and save an updated checkpoint.

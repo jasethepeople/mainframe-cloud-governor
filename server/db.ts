@@ -31,7 +31,7 @@ import { notifyOwner } from "./_core/notification";
 import { buildIncidentHandoffPersistencePlan, buildManualEscalationTestPayload, type EscalationProvider } from "./escalation.logic";
 import { persistIncidentHandoff } from "./escalationHandoff.persistence";
 import { buildIncidentPolicySnapshot, deriveIncidentDeadlineState } from "./incidentSla.logic";
-import { canPrepareSlaBreachDispatch } from "./slaBreach.logic";
+import { canPrepareSlaBreachDispatch, getConfirmedSlaBreachReceipt, isSlaBreachTimelineEvent } from "./slaBreach.logic";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -354,7 +354,7 @@ export async function prepareSlaBreachEscalations(userId: number) {
 export async function submitLocalAgentReceipt(userId: number, jobId: number, receipt: string, receiptSignature: string) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  const job = await db.select({ id: localAgentJobs.id, status: localAgentJobs.status, expiresAt: localAgentJobs.expiresAt, agentKeyId: localAgentJobs.agentKeyId, publicKeyJwk: localAgentKeys.publicKeyJwk }).from(localAgentJobs).innerJoin(localAgentKeys, eq(localAgentJobs.agentKeyId, localAgentKeys.id)).where(and(eq(localAgentJobs.id, jobId), eq(localAgentJobs.userId, userId), eq(localAgentKeys.status, "active"))).limit(1);
+  const job = await db.select({ id: localAgentJobs.id, jobType: localAgentJobs.jobType, manifest: localAgentJobs.manifest, status: localAgentJobs.status, expiresAt: localAgentJobs.expiresAt, agentKeyId: localAgentJobs.agentKeyId, publicKeyJwk: localAgentKeys.publicKeyJwk }).from(localAgentJobs).innerJoin(localAgentKeys, eq(localAgentJobs.agentKeyId, localAgentKeys.id)).where(and(eq(localAgentJobs.id, jobId), eq(localAgentJobs.userId, userId), eq(localAgentKeys.status, "active"))).limit(1);
   if (!job[0]) throw new Error("Active local-agent job was not found");
   if (!canAcceptLocalAgentReceipt(job[0].status, job[0].expiresAt)) {
     if (job[0].status === "queued") await db.update(localAgentJobs).set({ status: "expired" }).where(eq(localAgentJobs.id, jobId));
@@ -364,6 +364,13 @@ export async function submitLocalAgentReceipt(userId: number, jobId: number, rec
   if (!verified) throw new Error("Local-agent receipt signature could not be verified");
   await db.update(localAgentJobs).set({ status: "completed", receipt, receiptSignature, completedAt: new Date() }).where(eq(localAgentJobs.id, jobId));
   await recordAuditEvent(userId, null, "local_agent_receipt_verified", "local_agent_job", jobId, "Verified and recorded a signed local-agent job receipt.");
+  const breachConfirmation = getConfirmedSlaBreachReceipt(job[0].manifest, receipt);
+  if (job[0].jobType === "sealed_route_escalation" && breachConfirmation) {
+    await db.update(localAgentReadinessAlerts).set({ breachReceiptConfirmedAt: new Date(), breachReceiptJobId: jobId }).where(and(eq(localAgentReadinessAlerts.id, breachConfirmation.alertId), eq(localAgentReadinessAlerts.userId, userId), eq(localAgentReadinessAlerts.breachEscalationProfileId, breachConfirmation.escalationProfileId)));
+    const summary = `Verified sealed-route SLA-breach delivery receipt for local-agent job ${jobId} (HTTP ${breachConfirmation.httpStatus}).`;
+    await db.insert(localAgentEscalationEvents).values({ userId, alertId: breachConfirmation.alertId, escalationProfileId: breachConfirmation.escalationProfileId, eventType: "sla_breach_dispatch_receipt_confirmed", summary });
+    await recordAuditEvent(userId, null, "sla_breach_dispatch_receipt_confirmed", "local_agent_readiness_alert", breachConfirmation.alertId, summary, { jobId, escalationProfileId: breachConfirmation.escalationProfileId, httpStatus: breachConfirmation.httpStatus });
+  }
   return { success: true } as const;
 }
 
@@ -415,8 +422,15 @@ export async function evaluateLocalAgentReadinessByTaskUid(taskUid: string) {
 export async function listLocalAgentReadinessAlerts(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  const rows = await db.select({ id: localAgentReadinessAlerts.id, alertType: localAgentReadinessAlerts.alertType, status: localAgentReadinessAlerts.status, escalationState: localAgentReadinessAlerts.escalationState, summary: localAgentReadinessAlerts.summary, assigneeName: localAgentReadinessAlerts.assigneeName, assigneeEmail: localAgentReadinessAlerts.assigneeEmail, backupOwnerName: localAgentReadinessAlerts.backupOwnerName, backupOwnerEmail: localAgentReadinessAlerts.backupOwnerEmail, responseDueAt: localAgentReadinessAlerts.responseDueAt, createdAt: localAgentReadinessAlerts.createdAt, acknowledgedAt: localAgentReadinessAlerts.acknowledgedAt, resolvedAt: localAgentReadinessAlerts.resolvedAt, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName }).from(localAgentReadinessAlerts).leftJoin(localAgentKeys, eq(localAgentReadinessAlerts.agentKeyId, localAgentKeys.id)).where(eq(localAgentReadinessAlerts.userId, userId)).orderBy(desc(localAgentReadinessAlerts.createdAt));
+  const rows = await db.select({ id: localAgentReadinessAlerts.id, alertType: localAgentReadinessAlerts.alertType, status: localAgentReadinessAlerts.status, escalationState: localAgentReadinessAlerts.escalationState, summary: localAgentReadinessAlerts.summary, assigneeName: localAgentReadinessAlerts.assigneeName, assigneeEmail: localAgentReadinessAlerts.assigneeEmail, backupOwnerName: localAgentReadinessAlerts.backupOwnerName, backupOwnerEmail: localAgentReadinessAlerts.backupOwnerEmail, responseDueAt: localAgentReadinessAlerts.responseDueAt, breachEscalatedAt: localAgentReadinessAlerts.breachEscalatedAt, breachReceiptConfirmedAt: localAgentReadinessAlerts.breachReceiptConfirmedAt, breachReceiptJobId: localAgentReadinessAlerts.breachReceiptJobId, createdAt: localAgentReadinessAlerts.createdAt, acknowledgedAt: localAgentReadinessAlerts.acknowledgedAt, resolvedAt: localAgentReadinessAlerts.resolvedAt, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName }).from(localAgentReadinessAlerts).leftJoin(localAgentKeys, eq(localAgentReadinessAlerts.agentKeyId, localAgentKeys.id)).where(eq(localAgentReadinessAlerts.userId, userId)).orderBy(desc(localAgentReadinessAlerts.createdAt));
   return rows.map(row => ({ ...row, deadlineState: deriveIncidentDeadlineState(row.responseDueAt, row.escalationState) }));
+}
+
+export async function listSlaBreachDispatchTimeline(userId: number, filter: "all" | "prepared" | "confirmed") {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const events = await db.select({ id: localAgentEscalationEvents.id, alertId: localAgentEscalationEvents.alertId, eventType: localAgentEscalationEvents.eventType, summary: localAgentEscalationEvents.summary, createdAt: localAgentEscalationEvents.createdAt, profileLabel: incidentEscalationProfiles.label, endpointHost: incidentEscalationProfiles.endpointHost }).from(localAgentEscalationEvents).leftJoin(incidentEscalationProfiles, eq(localAgentEscalationEvents.escalationProfileId, incidentEscalationProfiles.id)).where(eq(localAgentEscalationEvents.userId, userId)).orderBy(desc(localAgentEscalationEvents.createdAt));
+  return events.filter(event => isSlaBreachTimelineEvent(event.eventType, filter));
 }
 
 export async function createIncidentEscalationProfile(userId: number, values: { provider: EscalationProvider; label: string; endpointHost: string; encryptedConfiguration: string; cryptoMetadata: string }) {
