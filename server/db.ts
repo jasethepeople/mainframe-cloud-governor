@@ -30,6 +30,7 @@ import { buildAgentReadinessAlert } from "./organizationAgent.logic";
 import { notifyOwner } from "./_core/notification";
 import { buildIncidentHandoffPersistencePlan, buildManualEscalationTestPayload, type EscalationProvider } from "./escalation.logic";
 import { persistIncidentHandoff } from "./escalationHandoff.persistence";
+import { buildIncidentPolicySnapshot, deriveIncidentDeadlineState } from "./incidentSla.logic";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -139,7 +140,7 @@ export async function getOrCreateGovernanceSettings(userId: number) {
   return created[0];
 }
 
-export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean; requiredApprovalCount?: number; auditRetentionDays?: number }) {
+export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean; requiredApprovalCount?: number; auditRetentionDays?: number; incidentSlaMinutes?: number; primaryIncidentOwnerName?: string; primaryIncidentOwnerEmail?: string; backupIncidentOwnerName?: string; backupIncidentOwnerEmail?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   const existing = await getOrCreateGovernanceSettings(userId);
@@ -346,7 +347,7 @@ export async function getLocalAgentReadiness(userId: number) {
 export async function evaluateLocalAgentReadiness(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  const [readiness, keys] = await Promise.all([getLocalAgentReadiness(userId), listLocalAgentKeys(userId)]);
+  const [readiness, keys, settings] = await Promise.all([getLocalAgentReadiness(userId), listLocalAgentKeys(userId), getOrCreateGovernanceSettings(userId)]);
   const activeKey = keys.find(key => key.status === "active") ?? null;
   const alert = buildAgentReadinessAlert(readiness.state, activeKey?.operationalOwnerName ?? null);
   if (!alert) {
@@ -355,7 +356,8 @@ export async function evaluateLocalAgentReadiness(userId: number) {
   }
   const existing = await db.select({ id: localAgentReadinessAlerts.id }).from(localAgentReadinessAlerts).where(and(eq(localAgentReadinessAlerts.userId, userId), eq(localAgentReadinessAlerts.alertType, alert.alertType), eq(localAgentReadinessAlerts.status, "open"))).limit(1);
   if (existing[0]) return { readiness, alert: { id: existing[0].id, ...alert, created: false } } as const;
-  const result = await db.insert(localAgentReadinessAlerts).values({ userId, agentKeyId: activeKey?.id ?? null, alertType: alert.alertType, summary: alert.summary });
+  const snapshot = buildIncidentPolicySnapshot(settings, new Date());
+  const result = await db.insert(localAgentReadinessAlerts).values({ userId, agentKeyId: activeKey?.id ?? null, alertType: alert.alertType, summary: alert.summary, ...snapshot });
   const id = Number(result[0].insertId);
   await recordAuditEvent(userId, null, "local_agent_readiness_alert_created", "local_agent_readiness_alert", id, alert.summary);
   try { await notifyOwner({ title: `Local-agent readiness: ${alert.alertType.replaceAll("_", " ")}`, content: alert.summary }); } catch (error) { console.warn("[Local agent readiness] Owner notification could not be delivered", error); }
@@ -374,7 +376,8 @@ export async function evaluateLocalAgentReadinessByTaskUid(taskUid: string) {
 export async function listLocalAgentReadinessAlerts(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  return db.select({ id: localAgentReadinessAlerts.id, alertType: localAgentReadinessAlerts.alertType, status: localAgentReadinessAlerts.status, escalationState: localAgentReadinessAlerts.escalationState, summary: localAgentReadinessAlerts.summary, assigneeName: localAgentReadinessAlerts.assigneeName, assigneeEmail: localAgentReadinessAlerts.assigneeEmail, createdAt: localAgentReadinessAlerts.createdAt, acknowledgedAt: localAgentReadinessAlerts.acknowledgedAt, resolvedAt: localAgentReadinessAlerts.resolvedAt, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName }).from(localAgentReadinessAlerts).leftJoin(localAgentKeys, eq(localAgentReadinessAlerts.agentKeyId, localAgentKeys.id)).where(eq(localAgentReadinessAlerts.userId, userId)).orderBy(desc(localAgentReadinessAlerts.createdAt));
+  const rows = await db.select({ id: localAgentReadinessAlerts.id, alertType: localAgentReadinessAlerts.alertType, status: localAgentReadinessAlerts.status, escalationState: localAgentReadinessAlerts.escalationState, summary: localAgentReadinessAlerts.summary, assigneeName: localAgentReadinessAlerts.assigneeName, assigneeEmail: localAgentReadinessAlerts.assigneeEmail, backupOwnerName: localAgentReadinessAlerts.backupOwnerName, backupOwnerEmail: localAgentReadinessAlerts.backupOwnerEmail, responseDueAt: localAgentReadinessAlerts.responseDueAt, createdAt: localAgentReadinessAlerts.createdAt, acknowledgedAt: localAgentReadinessAlerts.acknowledgedAt, resolvedAt: localAgentReadinessAlerts.resolvedAt, agentId: localAgentKeys.agentId, operationalOwnerName: localAgentKeys.operationalOwnerName }).from(localAgentReadinessAlerts).leftJoin(localAgentKeys, eq(localAgentReadinessAlerts.agentKeyId, localAgentKeys.id)).where(eq(localAgentReadinessAlerts.userId, userId)).orderBy(desc(localAgentReadinessAlerts.createdAt));
+  return rows.map(row => ({ ...row, deadlineState: deriveIncidentDeadlineState(row.responseDueAt, row.escalationState) }));
 }
 
 export async function createIncidentEscalationProfile(userId: number, values: { provider: EscalationProvider; label: string; endpointHost: string; encryptedConfiguration: string; cryptoMetadata: string }) {

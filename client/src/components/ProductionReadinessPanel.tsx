@@ -3,6 +3,7 @@ import { LocalAgentSetupWizard } from "@/components/LocalAgentSetupWizard";
 import { OrganizationAgentOperationsPanel } from "@/components/OrganizationAgentOperationsPanel";
 import { EscalationOperationsPanel } from "@/components/EscalationOperationsPanel";
 import { EscalationStateSummaryPanel } from "@/components/EscalationStateSummaryPanel";
+import { IncidentSlaOperationsPanel } from "@/components/IncidentSlaOperationsPanel";
 import { trpc } from "@/lib/trpc";
 import { Cable, ClipboardCopy, KeyRound, LockKeyhole, RadioTower, Send, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
@@ -56,6 +57,7 @@ export function ProductionReadinessPanel() {
     <OrganizationAgentOperationsPanel />
     <EscalationOperationsPanel />
     <EscalationStateSummaryPanel />
+    <IncidentSlaOperationsPanel />
     <section className="terminal-panel production-panel"><h2 className="panel-title"><b>CHK</b><span>OPERATOR VALIDATION STATUS</span></h2><div className="retention-readout"><ShieldCheck size={18} /><div><strong>{(localAgentReadiness.data?.state ?? "loading").replaceAll("_", " ").toUpperCase()}</strong><small>{localAgentReadiness.data?.state === "ready" ? `LAST VERIFIED ${new Date(localAgentReadiness.data.lastHealthCheck!).toLocaleString()}` : localAgentReadiness.data?.state === "no_active_key" ? "ACTION REQUIRED: REGISTER AN ACTIVE LOCAL-AGENT PUBLIC KEY." : localAgentReadiness.data?.state === "receipt_stale" ? "ACTION REQUIRED: A VERIFIED RECEIPT IS OLDER THAN 24 HOURS; QUEUE A FRESH HEALTH CHECK." : "ACTION REQUIRED: QUEUE AND VERIFY A CREDENTIAL-FREE SIGNED HEALTH CHECK."}</small></div></div><p>A health check verifies the agent identity, manifest-expiry guard, and receipt signing without invoking AWS or the configured SIEM endpoint.</p><button type="button" className="mainframe-button mainframe-button--primary" onClick={() => queueJob("health_check")} disabled={queueAgentJob.isPending}><ShieldCheck size={16} /> QUEUE SIGNED HEALTH CHECK</button></section>
   </>;
 }

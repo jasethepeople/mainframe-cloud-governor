@@ -75,3 +75,10 @@
 - [x] Save the fully verified escalation-state and routing checkpoint.
 - [x] Add an integration-style handoff persistence-adapter test that verifies alert update, optional route linkage, and append-only event insertion calls.
 - [x] Save the final verified escalation-state and routing checkpoint.
+- [x] Add configurable escalation SLA targets and primary/backup response ownership for local-agent incidents.
+- [x] Add durable incident response deadlines and deadline-state calculation for open readiness alerts.
+- [x] Add an SLA operations panel for policy editing, owner assignment, and deadline visibility.
+- [x] Add and run automated tests for SLA deadline and backup-owner policy behavior.
+- [x] Verify the SLA operations controls and save an updated checkpoint.
+- [x] Add automated backup-owner policy snapshot coverage for incident creation inputs and durable alert fields.
+- [x] Save the fully verified SLA policy and deadline operations checkpoint.

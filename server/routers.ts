@@ -35,6 +35,11 @@ export const appRouter = router({
       alertsEnabled: z.boolean().optional(),
       requiredApprovalCount: z.number().int().min(1).max(10).optional(),
       auditRetentionDays: z.number().int().min(30).max(3650).optional(),
+      incidentSlaMinutes: z.number().int().min(5).max(1440).optional(),
+      primaryIncidentOwnerName: z.string().trim().min(2).max(120).optional(),
+      primaryIncidentOwnerEmail: z.string().trim().email().max(320).optional(),
+      backupIncidentOwnerName: z.string().trim().min(2).max(120).optional(),
+      backupIncidentOwnerEmail: z.string().trim().email().max(320).optional(),
     })).mutation(async ({ ctx, input }) => {
       const settings = await governanceDb.updateGovernanceSettings(ctx.user.id, input);
       await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, "governance_policy_updated", "governance_settings", settings.id, "Updated governance policy controls.", input);
