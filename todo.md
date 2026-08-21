@@ -13,3 +13,9 @@
 - [x] Build cloud connection, billing history, and invoice views in the shared mainframe visual system.
 - [x] Write and run Vitest coverage for analysis, teardown, billing, and encryption validation behavior.
 - [x] Verify dashboard flows, visual appearance, responsive layout, and server health.
+- [x] Add least-privilege connection profiles and provider-specific onboarding guidance without processing live credentials.
+- [x] Add configurable high-value thresholds and dual-approval policy controls for shred-list governance.
+- [x] Record and display high-value shred-list alerts using the configured policy thresholds.
+- [x] Extend the mainframe configuration experience with policy, alert, and connection-readiness controls.
+- [x] Add and run automated tests for approval-policy and alert-trigger logic.
+- [x] Validate the extended dashboard flows and save an updated checkpoint.

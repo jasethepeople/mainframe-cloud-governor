@@ -34,6 +34,14 @@ export function selectApprovedActiveItems<T extends { decision: string; resource
   return items.filter(item => item.decision === "approved" && item.resourceStatus === "active");
 }
 
+export function shouldCreateHighValueAlert(estimatedSavingsCents: number, thresholdCents: number, alertsEnabled: boolean) {
+  return alertsEnabled && estimatedSavingsCents >= thresholdCents;
+}
+
+export function requiresAdministratorAuthorization(requireAdminAuthorization: boolean, role: string) {
+  return requireAdminAuthorization && role !== "admin";
+}
+
 export function formatResourceType(resourceType: MockResourceBlueprint["resourceType"]) {
   return resourceType === "idle_container" ? "Idle Container" : "Unattached Volume";
 }

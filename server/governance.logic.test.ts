@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateFeeCents, isWastefulResource, selectApprovedActiveItems } from "./governance.logic";
+import { calculateFeeCents, isWastefulResource, requiresAdministratorAuthorization, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
 
 describe("governance cost rules", () => {
   it("identifies only sufficiently idle and costly resources as waste", () => {
@@ -21,5 +21,17 @@ describe("governance cost rules", () => {
       { resourceId: 3, decision: "approved", resourceStatus: "shredded" },
     ];
     expect(selectApprovedActiveItems(items)).toEqual([{ resourceId: 1, decision: "approved", resourceStatus: "active" }]);
+  });
+
+  it("arms high-value alerts only when the threshold is reached and alerting is enabled", () => {
+    expect(shouldCreateHighValueAlert(50_000, 50_000, true)).toBe(true);
+    expect(shouldCreateHighValueAlert(49_999, 50_000, true)).toBe(false);
+    expect(shouldCreateHighValueAlert(90_000, 50_000, false)).toBe(false);
+  });
+
+  it("requires an administrator only when the policy gate is armed", () => {
+    expect(requiresAdministratorAuthorization(true, "user")).toBe(true);
+    expect(requiresAdministratorAuthorization(true, "admin")).toBe(false);
+    expect(requiresAdministratorAuthorization(false, "user")).toBe(false);
   });
 });

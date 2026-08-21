@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   billingRecords,
   cloudConnections,
+  governanceAlerts,
   governanceSettings,
   InsertUser,
   mockResources,
@@ -11,7 +12,7 @@ import {
   users,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { calculateFeeCents, DEFAULT_FEE_RATE_BPS, DEFAULT_MIN_MONTHLY_COST_CENTS, isWastefulResource, MOCK_RESOURCE_BLUEPRINTS, selectApprovedActiveItems } from "./governance.logic";
+import { calculateFeeCents, DEFAULT_FEE_RATE_BPS, DEFAULT_MIN_MONTHLY_COST_CENTS, isWastefulResource, MOCK_RESOURCE_BLUEPRINTS, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -114,7 +115,7 @@ export async function getOrCreateGovernanceSettings(userId: number) {
   return created[0];
 }
 
-export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string }) {
+export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean }) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   await getOrCreateGovernanceSettings(userId);
@@ -143,6 +144,8 @@ export async function createCloudConnection(userId: number, values: {
   label: string;
   encryptedCredential: string;
   cryptoMetadata: string;
+  accessProfile: "inventory_read_only";
+  resourceScope: string;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
@@ -157,6 +160,8 @@ export async function listCloudConnections(userId: number) {
     id: cloudConnections.id,
     provider: cloudConnections.provider,
     label: cloudConnections.label,
+    accessProfile: cloudConnections.accessProfile,
+    resourceScope: cloudConnections.resourceScope,
     createdAt: cloudConnections.createdAt,
     updatedAt: cloudConnections.updatedAt,
   }).from(cloudConnections).where(eq(cloudConnections.userId, userId)).orderBy(desc(cloudConnections.createdAt));
@@ -193,7 +198,24 @@ export async function analyzeMockInfrastructure(userId: number, source: "manual"
       estimatedMonthlySavingsCents: resource.monthlyCostCents,
     })));
   }
-  return { shredListId, totalItems: candidates.length, estimatedSavingsCents };
+  let alert: { id: number; estimatedSavingsCents: number } | null = null;
+  if (shouldCreateHighValueAlert(estimatedSavingsCents, settings.highValueThresholdCents, settings.alertsEnabled)) {
+    const alertInsert = await db.insert(governanceAlerts).values({ userId, shredListId, estimatedSavingsCents });
+    alert = { id: Number(alertInsert[0].insertId), estimatedSavingsCents };
+  }
+  return { shredListId, totalItems: candidates.length, estimatedSavingsCents, alert };
+}
+
+export async function markAlertDelivery(alertId: number, delivered: boolean) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  await db.update(governanceAlerts).set({ status: delivered ? "delivered" : "delivery_failed", notifiedAt: new Date() }).where(eq(governanceAlerts.id, alertId));
+}
+
+export async function listGovernanceAlerts(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select().from(governanceAlerts).where(eq(governanceAlerts.userId, userId)).orderBy(desc(governanceAlerts.createdAt));
 }
 
 export async function listShredLists(userId: number) {
@@ -270,12 +292,13 @@ export async function listBillingRecords(userId: number) {
 }
 
 export async function getGovernanceDashboard(userId: number) {
-  const [settings, connections, lists, invoices] = await Promise.all([
+  const [settings, connections, lists, invoices, alerts] = await Promise.all([
     getOrCreateGovernanceSettings(userId),
     listCloudConnections(userId),
     listShredLists(userId),
     listBillingRecords(userId),
+    listGovernanceAlerts(userId),
   ]);
   const shreddedSavedCents = invoices.reduce((sum, record) => sum + record.savedSpendCents, 0);
-  return { settings, connections, lists, invoices, shreddedSavedCents };
+  return { settings, connections, lists, invoices, alerts, shreddedSavedCents };
 }

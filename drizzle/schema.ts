@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { boolean, int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -32,6 +32,8 @@ export const cloudConnections = mysqlTable("cloudConnections", {
   label: varchar("label", { length: 100 }).notNull(),
   encryptedCredential: text("encryptedCredential").notNull(),
   cryptoMetadata: text("cryptoMetadata").notNull(),
+  accessProfile: mysqlEnum("accessProfile", ["inventory_read_only"]).notNull().default("inventory_read_only"),
+  resourceScope: varchar("resourceScope", { length: 160 }).notNull().default("Scoped provider inventory"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -43,6 +45,9 @@ export const governanceSettings = mysqlTable("governanceSettings", {
   minimumMonthlyCostCents: int("minimumMonthlyCostCents").notNull().default(2500),
   scanCronExpression: varchar("scanCronExpression", { length: 64 }).notNull().default("0 0 */6 * * *"),
   scheduleCronTaskUid: varchar("scheduleCronTaskUid", { length: 65 }),
+  highValueThresholdCents: int("highValueThresholdCents").notNull().default(50000),
+  requireAdminAuthorization: boolean("requireAdminAuthorization").notNull().default(false),
+  alertsEnabled: boolean("alertsEnabled").notNull().default(true),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -94,9 +99,20 @@ export const billingRecords = mysqlTable("billingRecords", {
   issuedAt: timestamp("issuedAt").defaultNow().notNull(),
 });
 
+export const governanceAlerts = mysqlTable("governanceAlerts", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  shredListId: int("shredListId").notNull().references(() => shredLists.id),
+  estimatedSavingsCents: int("estimatedSavingsCents").notNull(),
+  status: mysqlEnum("status", ["recorded", "delivered", "delivery_failed"]).notNull().default("recorded"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  notifiedAt: timestamp("notifiedAt"),
+});
+
 export type CloudConnection = typeof cloudConnections.$inferSelect;
 export type GovernanceSettings = typeof governanceSettings.$inferSelect;
 export type MockResource = typeof mockResources.$inferSelect;
 export type ShredList = typeof shredLists.$inferSelect;
 export type ShredListItem = typeof shredListItems.$inferSelect;
 export type BillingRecord = typeof billingRecords.$inferSelect;
+export type GovernanceAlert = typeof governanceAlerts.$inferSelect;

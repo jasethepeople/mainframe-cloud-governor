@@ -1,6 +1,8 @@
 import type { Request, Response } from "express";
 import { runScheduledAnalysisByTaskUid } from "./db";
+import { markAlertDelivery } from "./db";
 import { sdk } from "./_core/sdk";
+import { notifyOwner } from "./_core/notification";
 
 /** Platform-authenticated, idempotent callback for a user's recurring shred-list analysis. */
 export async function scheduledShredAnalysisHandler(req: Request, res: Response) {
@@ -8,6 +10,10 @@ export async function scheduledShredAnalysisHandler(req: Request, res: Response)
     const user = await sdk.authenticateRequest(req);
     if (!user.isCron || !user.taskUid) return res.status(403).json({ error: "cron-only" });
     const result = await runScheduledAnalysisByTaskUid(user.taskUid);
+    if (result.skipped === false && result.alert) {
+      const delivered = await notifyOwner({ title: "Scheduled high-value shred list detected", content: `Shred list #${result.shredListId} identified ${result.totalItems} resources with ${result.estimatedSavingsCents} cents in estimated monthly savings.` });
+      await markAlertDelivery(result.alert.id, delivered);
+    }
     return res.json({ ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
