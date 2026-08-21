@@ -1,7 +1,11 @@
 import { COOKIE_NAME } from "@shared/const";
+import { parse as parseCookie } from "cookie";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { createHeartbeatJob, updateHeartbeatJob } from "./_core/heartbeat";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
+import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { z } from "zod";
+import * as governanceDb from "./db";
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -16,13 +20,46 @@ export const appRouter = router({
       } as const;
     }),
   }),
-
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
+  governance: router({
+    dashboard: protectedProcedure.query(({ ctx }) => governanceDb.getGovernanceDashboard(ctx.user.id)),
+    settings: protectedProcedure.query(({ ctx }) => governanceDb.getOrCreateGovernanceSettings(ctx.user.id)),
+    updateSettings: protectedProcedure.input(z.object({
+      feeRateBps: z.number().int().min(0).max(5000).optional(),
+      minimumMonthlyCostCents: z.number().int().min(0).max(100_000_000).optional(),
+      scanCronExpression: z.string().min(9).max(64).optional(),
+    })).mutation(({ ctx, input }) => governanceDb.updateGovernanceSettings(ctx.user.id, input)),
+    scheduleAnalysis: protectedProcedure.input(z.object({ cron: z.string().regex(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+$/, "Use a six-field UTC cron expression") })).mutation(async ({ ctx, input }) => {
+      const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
+      const settings = await governanceDb.updateGovernanceSettings(ctx.user.id, { scanCronExpression: input.cron });
+      const jobDefinition = {
+        cron: input.cron,
+        path: "/api/scheduled/shred-analysis",
+        payload: {},
+        description: "Run deterministic mock cloud analysis and generate a shred list.",
+      };
+      if (settings.scheduleCronTaskUid) {
+        const updated = await updateHeartbeatJob(settings.scheduleCronTaskUid, jobDefinition, sessionToken);
+        return { taskUid: settings.scheduleCronTaskUid, nextExecutionAt: updated.nextExecutionAt };
+      }
+      const created = await createHeartbeatJob({ name: `shred-analysis-${ctx.user.id}`, ...jobDefinition }, sessionToken);
+      await governanceDb.setScheduleTaskUid(ctx.user.id, created.taskUid);
+      return created;
+    }),
+    connections: protectedProcedure.query(({ ctx }) => governanceDb.listCloudConnections(ctx.user.id)),
+    addConnection: protectedProcedure.input(z.object({
+      provider: z.enum(["aws", "azure", "gcp"]),
+      label: z.string().trim().min(2).max(100),
+      encryptedCredential: z.string().min(20),
+      cryptoMetadata: z.string().min(20),
+    })).mutation(({ ctx, input }) => governanceDb.createCloudConnection(ctx.user.id, input)),
+    seedMockInfrastructure: protectedProcedure.mutation(({ ctx }) => governanceDb.ensureMockInfrastructure(ctx.user.id)),
+    analyze: protectedProcedure.input(z.object({ source: z.enum(["manual", "scheduled"]).default("manual") })).mutation(({ ctx, input }) => governanceDb.analyzeMockInfrastructure(ctx.user.id, input.source)),
+    shredLists: protectedProcedure.query(({ ctx }) => governanceDb.listShredLists(ctx.user.id)),
+    shredList: protectedProcedure.input(z.object({ shredListId: z.number().int().positive() })).query(({ ctx, input }) => governanceDb.getShredList(ctx.user.id, input.shredListId)),
+    setDecision: protectedProcedure.input(z.object({ itemId: z.number().int().positive(), decision: z.enum(["approved", "rejected"]) })).mutation(({ ctx, input }) => governanceDb.setShredDecision(ctx.user.id, input.itemId, input.decision)),
+    executeTeardowns: protectedProcedure.input(z.object({ shredListId: z.number().int().positive() })).mutation(({ ctx, input }) => governanceDb.executeApprovedTeardowns(ctx.user.id, input.shredListId)),
+    billingHistory: protectedProcedure.query(({ ctx }) => governanceDb.listBillingRecords(ctx.user.id)),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

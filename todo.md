@@ -1,0 +1,15 @@
+# Project TODO
+
+- [x] Define database entities for encrypted cloud connections, mock resources, shred lists, teardown outcomes, and invoices.
+- [x] Build protected tRPC workflows with user ownership enforcement for all governance data.
+- [x] Implement browser-side AES-GCM credential encryption before cloud connection persistence.
+- [x] Create deterministic mock multi-account infrastructure generation for idle containers and unattached storage volumes.
+- [x] Implement shred-list analysis with configurable cost thresholds and monthly savings estimates.
+- [x] Implement simulated teardown confirmation that records resources as shredded and aggregates saved spend.
+- [x] Implement configurable savings-fee billing calculations, invoice generation, and billing history retrieval.
+- [x] Add an idempotent scheduled-analysis callback and a user-manageable scheduled scan configuration.
+- [x] Build the protected retro-futuristic amber CRT dashboard with scanlines, phosphor typography, and command-line inputs.
+- [x] Build shred-list review with chunky mechanical approve/reject controls for each resource.
+- [x] Build cloud connection, billing history, and invoice views in the shared mainframe visual system.
+- [x] Write and run Vitest coverage for analysis, teardown, billing, and encryption validation behavior.
+- [x] Verify dashboard flows, visual appearance, responsive layout, and server health.
