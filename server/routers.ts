@@ -8,6 +8,7 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as governanceDb from "./db";
 import { hasApprovalQuorum, requiresAdministratorAuthorization } from "./governance.logic";
+import { isSafeSiemEndpointHost } from "./productionGovernance.logic";
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -33,6 +34,7 @@ export const appRouter = router({
       requireAdminAuthorization: z.boolean().optional(),
       alertsEnabled: z.boolean().optional(),
       requiredApprovalCount: z.number().int().min(1).max(10).optional(),
+      auditRetentionDays: z.number().int().min(30).max(3650).optional(),
     })).mutation(async ({ ctx, input }) => {
       const settings = await governanceDb.updateGovernanceSettings(ctx.user.id, input);
       await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, "governance_policy_updated", "governance_settings", settings.id, "Updated governance policy controls.", input);
@@ -41,6 +43,7 @@ export const appRouter = router({
     scheduleAnalysis: protectedProcedure.input(z.object({ cron: z.string().regex(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+$/, "Use a six-field UTC cron expression") })).mutation(async ({ ctx, input }) => {
       const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
       const settings = await governanceDb.updateGovernanceSettings(ctx.user.id, { scanCronExpression: input.cron });
+      if (!settings.releasePublishedAt) throw new Error("Confirm the published release in Production Gate before enabling periodic analysis");
       const jobDefinition = {
         cron: input.cron,
         path: "/api/scheduled/shred-analysis",
@@ -55,8 +58,11 @@ export const appRouter = router({
       await governanceDb.setScheduleTaskUid(ctx.user.id, created.taskUid);
       return created;
     }),
+    confirmPublishedRelease: protectedProcedure.mutation(({ ctx }) => governanceDb.confirmPublishedRelease(ctx.user.id)),
     connections: protectedProcedure.query(({ ctx }) => governanceDb.listCloudConnections(ctx.user.id)),
     providerReadiness: protectedProcedure.query(({ ctx }) => governanceDb.getProviderReadiness(ctx.user.id)),
+    providerOnboarding: protectedProcedure.query(({ ctx }) => governanceDb.listProviderOnboarding(ctx.user.id)),
+    prepareProviderOnboarding: protectedProcedure.input(z.object({ provider: z.enum(["aws", "azure", "gcp"]), readOnlyProfile: z.string().trim().min(2).max(160) })).mutation(({ ctx, input }) => governanceDb.enrollProviderOnboarding(ctx.user.id, input.provider, input.readOnlyProfile)),
     addConnection: protectedProcedure.input(z.object({
       provider: z.enum(["aws", "azure", "gcp"]),
       label: z.string().trim().min(2).max(100),
@@ -94,6 +100,19 @@ export const appRouter = router({
     reviewShredList: protectedProcedure.input(z.object({ shredListId: z.number().int().positive(), decision: z.enum(["approved", "rejected"]), note: z.string().trim().max(500).optional() })).mutation(({ ctx, input }) => governanceDb.reviewAssignedShredList(ctx.user.id, input.shredListId, input.decision, input.note)),
     approvalProgress: protectedProcedure.input(z.object({ shredListId: z.number().int().positive() })).query(({ ctx, input }) => governanceDb.getApprovalProgress(ctx.user.id, input.shredListId)),
     auditEvents: protectedProcedure.query(({ ctx }) => governanceDb.listAuditEvents(ctx.user.id)),
+    siemProfiles: protectedProcedure.query(({ ctx }) => governanceDb.listSiemForwardingProfiles(ctx.user.id)),
+    addSiemProfile: protectedProcedure.input(z.object({
+      provider: z.enum(["splunk_hec", "datadog_logs", "generic_https"]),
+      label: z.string().trim().min(2).max(100),
+      endpointHost: z.string().trim().min(3).max(255).refine(isSafeSiemEndpointHost, "Use a public hostname without a protocol or path"),
+      encryptedConfiguration: z.string().min(20),
+      cryptoMetadata: z.string().min(20),
+    })).mutation(({ ctx, input }) => governanceDb.createSiemForwardingProfile(ctx.user.id, input)),
+    localAgentKeys: protectedProcedure.query(({ ctx }) => governanceDb.listLocalAgentKeys(ctx.user.id)),
+    registerLocalAgentKey: protectedProcedure.input(z.object({ agentId: z.string().trim().min(3).max(100), publicKeyJwk: z.string().min(20).max(20_000) })).mutation(({ ctx, input }) => governanceDb.registerLocalAgentKey(ctx.user.id, input.agentId, input.publicKeyJwk)),
+    localAgentJobs: protectedProcedure.query(({ ctx }) => governanceDb.listLocalAgentJobs(ctx.user.id)),
+    queueLocalAgentJob: protectedProcedure.input(z.object({ agentKeyId: z.number().int().positive(), jobType: z.enum(["aws_read_only_discovery", "generic_https_siem_delivery"]) })).mutation(({ ctx, input }) => governanceDb.queueLocalAgentJob(ctx.user.id, input.agentKeyId, input.jobType)),
+    submitLocalAgentReceipt: protectedProcedure.input(z.object({ jobId: z.number().int().positive(), receipt: z.string().min(2).max(100_000), receiptSignature: z.string().min(20).max(20_000) })).mutation(({ ctx, input }) => governanceDb.submitLocalAgentReceipt(ctx.user.id, input.jobId, input.receipt, input.receiptSignature)),
     executeTeardowns: protectedProcedure.input(z.object({ shredListId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const settings = await governanceDb.getOrCreateGovernanceSettings(ctx.user.id);
       if (requiresAdministratorAuthorization(settings.requireAdminAuthorization, ctx.user.role)) throw new Error("Administrator authorization is required by the active teardown policy");

@@ -8,15 +8,21 @@ import {
   governanceAuditEvents,
   governanceSettings,
   InsertUser,
+  localAgentJobs,
+  localAgentKeys,
   mockResources,
+  providerOnboarding,
   shredListItems,
   shredListApprovals,
   shredLists,
+  siemForwardingProfiles,
   users,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { calculateFeeCents, DEFAULT_FEE_RATE_BPS, DEFAULT_MIN_MONTHLY_COST_CENTS, isWastefulResource, MOCK_RESOURCE_BLUEPRINTS, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
 import { getProviderAdapterReadiness } from "./providerAdapters";
+import { canExtendAuditRetention } from "./productionGovernance.logic";
+import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, hashManifest, type LocalAgentJobType, verifyLocalAgentReceipt } from "./localAgent.logic";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -126,10 +132,11 @@ export async function getOrCreateGovernanceSettings(userId: number) {
   return created[0];
 }
 
-export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean; requiredApprovalCount?: number }) {
+export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean; requiredApprovalCount?: number; auditRetentionDays?: number }) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  await getOrCreateGovernanceSettings(userId);
+  const existing = await getOrCreateGovernanceSettings(userId);
+  if (values.auditRetentionDays !== undefined && !canExtendAuditRetention(existing.auditRetentionDays, values.auditRetentionDays)) throw new Error("Audit retention is append-only and may only be extended");
   await db.update(governanceSettings).set(values).where(eq(governanceSettings.userId, userId));
   return getOrCreateGovernanceSettings(userId);
 }
@@ -138,6 +145,15 @@ export async function setScheduleTaskUid(userId: number, taskUid: string) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   await db.update(governanceSettings).set({ scheduleCronTaskUid: taskUid }).where(eq(governanceSettings.userId, userId));
+  return getOrCreateGovernanceSettings(userId);
+}
+
+export async function confirmPublishedRelease(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  await getOrCreateGovernanceSettings(userId);
+  await db.update(governanceSettings).set({ releasePublishedAt: new Date() }).where(eq(governanceSettings.userId, userId));
+  await recordAuditEvent(userId, userId, "release_publication_confirmed", "governance_settings", null, "Operator confirmed that the current checkpoint was published before scheduling periodic analysis.");
   return getOrCreateGovernanceSettings(userId);
 }
 
@@ -181,6 +197,91 @@ export async function listCloudConnections(userId: number) {
 export async function getProviderReadiness(userId: number) {
   const connections = await listCloudConnections(userId);
   return (["aws", "azure", "gcp"] as const).map(provider => getProviderAdapterReadiness(provider, connections.some(connection => connection.provider === provider)));
+}
+
+export async function enrollProviderOnboarding(userId: number, provider: "aws" | "azure" | "gcp", readOnlyProfile: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const existing = await db.select({ id: providerOnboarding.id }).from(providerOnboarding).where(and(eq(providerOnboarding.userId, userId), eq(providerOnboarding.provider, provider))).limit(1);
+  if (existing[0]) await db.update(providerOnboarding).set({ readOnlyProfile, status: "connector_required", connectorUid: null, validatedAt: null }).where(eq(providerOnboarding.id, existing[0].id));
+  else await db.insert(providerOnboarding).values({ userId, provider, readOnlyProfile, status: "connector_required" });
+  await recordAuditEvent(userId, userId, "provider_onboarding_prepared", "provider_onboarding", existing[0]?.id ?? null, `Prepared ${provider.toUpperCase()} read-only provider onboarding; a verified connector is required before live discovery.`);
+  return listProviderOnboarding(userId);
+}
+
+export async function listProviderOnboarding(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select().from(providerOnboarding).where(eq(providerOnboarding.userId, userId)).orderBy(desc(providerOnboarding.updatedAt));
+}
+
+export async function createSiemForwardingProfile(userId: number, values: { provider: "splunk_hec" | "datadog_logs" | "generic_https"; label: string; endpointHost: string; encryptedConfiguration: string; cryptoMetadata: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const result = await db.insert(siemForwardingProfiles).values({ userId, ...values, status: "connector_required", enabled: false });
+  const id = Number(result[0].insertId);
+  await recordAuditEvent(userId, userId, "siem_profile_sealed", "siem_forwarding_profile", id, `Sealed a ${values.provider} SIEM forwarding profile; connector validation is required before forwarding.`, { label: values.label, endpointHost: values.endpointHost });
+  return { id };
+}
+
+export async function listSiemForwardingProfiles(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select({ id: siemForwardingProfiles.id, provider: siemForwardingProfiles.provider, label: siemForwardingProfiles.label, endpointHost: siemForwardingProfiles.endpointHost, connectorUid: siemForwardingProfiles.connectorUid, status: siemForwardingProfiles.status, enabled: siemForwardingProfiles.enabled, validatedAt: siemForwardingProfiles.validatedAt, createdAt: siemForwardingProfiles.createdAt, updatedAt: siemForwardingProfiles.updatedAt }).from(siemForwardingProfiles).where(eq(siemForwardingProfiles.userId, userId)).orderBy(desc(siemForwardingProfiles.createdAt));
+}
+
+export async function registerLocalAgentKey(userId: number, agentId: string, publicKeyJwk: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  try { JSON.parse(publicKeyJwk); } catch { throw new Error("Agent public key must be valid JWK JSON"); }
+  const existing = await db.select({ id: localAgentKeys.id }).from(localAgentKeys).where(and(eq(localAgentKeys.userId, userId), eq(localAgentKeys.agentId, agentId))).limit(1);
+  if (existing[0]) await db.update(localAgentKeys).set({ publicKeyJwk, status: "active", revokedAt: null }).where(eq(localAgentKeys.id, existing[0].id));
+  else await db.insert(localAgentKeys).values({ userId, agentId, publicKeyJwk, status: "active" });
+  await recordAuditEvent(userId, userId, "local_agent_registered", "local_agent_key", existing[0]?.id ?? null, `Registered or rotated the local agent identity ${agentId}.`);
+  return listLocalAgentKeys(userId);
+}
+
+export async function listLocalAgentKeys(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select({ id: localAgentKeys.id, agentId: localAgentKeys.agentId, status: localAgentKeys.status, createdAt: localAgentKeys.createdAt, revokedAt: localAgentKeys.revokedAt }).from(localAgentKeys).where(eq(localAgentKeys.userId, userId)).orderBy(desc(localAgentKeys.createdAt));
+}
+
+export async function queueLocalAgentJob(userId: number, agentKeyId: number, jobType: LocalAgentJobType) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const key = await db.select({ id: localAgentKeys.id }).from(localAgentKeys).where(and(eq(localAgentKeys.id, agentKeyId), eq(localAgentKeys.userId, userId), eq(localAgentKeys.status, "active"))).limit(1);
+  if (!key[0]) throw new Error("An active local-agent identity is required before issuing a job");
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+  const provisional = await db.insert(localAgentJobs).values({ userId, agentKeyId, jobType, manifest: "pending", manifestHash: "pending", expiresAt });
+  const jobId = Number(provisional[0].insertId);
+  const manifest = buildLocalAgentManifest(jobId, jobType, expiresAt);
+  const manifestJson = JSON.stringify(manifest);
+  await db.update(localAgentJobs).set({ manifest: manifestJson, manifestHash: hashManifest(manifest) }).where(eq(localAgentJobs.id, jobId));
+  await recordAuditEvent(userId, userId, "local_agent_job_queued", "local_agent_job", jobId, `Queued ${jobType.replaceAll("_", " ")} for a user-controlled local agent.`, manifest);
+  return { jobId, manifest, expiresAt };
+}
+
+export async function submitLocalAgentReceipt(userId: number, jobId: number, receipt: string, receiptSignature: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const job = await db.select({ id: localAgentJobs.id, status: localAgentJobs.status, expiresAt: localAgentJobs.expiresAt, agentKeyId: localAgentJobs.agentKeyId, publicKeyJwk: localAgentKeys.publicKeyJwk }).from(localAgentJobs).innerJoin(localAgentKeys, eq(localAgentJobs.agentKeyId, localAgentKeys.id)).where(and(eq(localAgentJobs.id, jobId), eq(localAgentJobs.userId, userId), eq(localAgentKeys.status, "active"))).limit(1);
+  if (!job[0]) throw new Error("Active local-agent job was not found");
+  if (!canAcceptLocalAgentReceipt(job[0].status, job[0].expiresAt)) {
+    if (job[0].status === "queued") await db.update(localAgentJobs).set({ status: "expired" }).where(eq(localAgentJobs.id, jobId));
+    throw new Error(job[0].status === "queued" ? "Local-agent job has expired" : "Local-agent receipts are append-only and may only be submitted once");
+  }
+  const verified = verifyLocalAgentReceipt(JSON.parse(job[0].publicKeyJwk), receipt, receiptSignature);
+  if (!verified) throw new Error("Local-agent receipt signature could not be verified");
+  await db.update(localAgentJobs).set({ status: "completed", receipt, receiptSignature, completedAt: new Date() }).where(eq(localAgentJobs.id, jobId));
+  await recordAuditEvent(userId, null, "local_agent_receipt_verified", "local_agent_job", jobId, "Verified and recorded a signed local-agent job receipt.");
+  return { success: true } as const;
+}
+
+export async function listLocalAgentJobs(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select({ id: localAgentJobs.id, jobType: localAgentJobs.jobType, status: localAgentJobs.status, manifest: localAgentJobs.manifest, manifestHash: localAgentJobs.manifestHash, completedAt: localAgentJobs.completedAt, expiresAt: localAgentJobs.expiresAt, createdAt: localAgentJobs.createdAt, agentId: localAgentKeys.agentId }).from(localAgentJobs).innerJoin(localAgentKeys, eq(localAgentJobs.agentKeyId, localAgentKeys.id)).where(eq(localAgentJobs.userId, userId)).orderBy(desc(localAgentJobs.createdAt));
 }
 
 export async function recordAuditEvent(ownerUserId: number, actorUserId: number | null, eventType: string, entityType: string, entityId: number | null, summary: string, payload?: unknown) {

@@ -25,3 +25,21 @@
 - [x] Add a release panel that surfaces scheduled-analysis activation prerequisites after publish.
 - [x] Add and run Vitest coverage for approval quorum and audit-export behavior.
 - [x] Validate the expanded team-governance interface and save a release checkpoint.
+- [x] Add production provider-integration onboarding with explicit zero-trust connector requirements and non-secret readiness validation.
+- [x] Add immutable audit-retention policy settings with append-only governance evidence handling.
+- [x] Add configurable SIEM forwarding profiles, secure endpoint validation, and auditable delivery state.
+- [x] Add production release controls that expose scheduled-analysis activation only after publish.
+- [x] Add and run automated tests for audit-retention policy and SIEM payload serialization.
+- [x] Validate production rollout controls and save a deployment-ready checkpoint.
+- [x] Add an AWS read-only inventory adapter with explicit action boundaries and credential validation through a signed local-agent job manifest.
+- [x] Add generic HTTPS SIEM delivery through a signed local-agent job manifest and auditable receipt outcomes.
+- [x] Preserve zero-trust execution by keeping AWS and SIEM credentials in the user-controlled local agent rather than requesting application-side secrets.
+- [x] Add and run tests for AWS adapter request shaping and generic SIEM event forwarding contracts.
+- [x] Verify the selected integration path and save a production checkpoint.
+- [x] Define a user-controlled local-agent bridge for AWS read-only discovery and generic HTTPS SIEM delivery, with no application-side credential decryption.
+- [x] Add signed job manifests and receipt records for local-agent discovery and SIEM delivery outcomes.
+- [x] Add and run tests for local-agent job verification and append-only receipt handling.
+- [x] Validate the local-agent production bridge and save a production checkpoint.
+- [x] Enforce release confirmation before periodic-analysis activation can be scheduled.
+- [x] Add and run automated receipt-state tests for expired and already-completed local-agent jobs.
+- [x] Save the verified production rollout and local-agent bridge checkpoint.

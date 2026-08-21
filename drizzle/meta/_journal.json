@@ -29,6 +29,27 @@
       "when": 1787316022608,
       "tag": "0003_green_excalibur",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1787320399522,
+      "tag": "0004_wise_hedge_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1787320714048,
+      "tag": "0005_flawless_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1787321002594,
+      "tag": "0006_ambitious_night_nurse",
+      "breakpoints": true
     }
   ]
 }

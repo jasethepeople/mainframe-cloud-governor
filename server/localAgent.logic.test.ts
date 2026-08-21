@@ -1,0 +1,28 @@
+import { generateKeyPairSync, sign } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, hashManifest, verifyLocalAgentReceipt } from "./localAgent.logic";
+
+describe("local agent bridge", () => {
+  it("creates a read-only AWS manifest without mutating actions", () => {
+    const manifest = buildLocalAgentManifest(4, "aws_read_only_discovery", new Date("2026-08-22T00:00:00.000Z"));
+    expect(manifest).toMatchObject({ jobType: "aws_read_only_discovery", mutatingActionsProhibited: true });
+    expect(manifest.allowedActions).toContain("ec2:DescribeInstances");
+    expect(manifest.allowedActions.some(action => action.includes("Delete"))).toBe(false);
+    expect(hashManifest(manifest)).toHaveLength(64);
+  });
+
+  it("accepts a correctly signed agent receipt and rejects a modified one", () => {
+    const keys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const receipt = JSON.stringify({ status: "completed", resourceCount: 3 });
+    const signature = sign("sha256", Buffer.from(receipt), keys.privateKey).toString("base64");
+    expect(verifyLocalAgentReceipt(keys.publicKey.export({ format: "jwk" }), receipt, signature)).toBe(true);
+    expect(verifyLocalAgentReceipt(keys.publicKey.export({ format: "jwk" }), `${receipt}x`, signature)).toBe(false);
+  });
+
+  it("accepts only one non-expired receipt for a queued job", () => {
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    expect(canAcceptLocalAgentReceipt("queued", new Date("2026-08-21T00:15:00.000Z"), now)).toBe(true);
+    expect(canAcceptLocalAgentReceipt("completed", new Date("2026-08-21T00:15:00.000Z"), now)).toBe(false);
+    expect(canAcceptLocalAgentReceipt("queued", new Date("2026-08-20T23:59:00.000Z"), now)).toBe(false);
+  });
+});

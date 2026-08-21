@@ -49,6 +49,8 @@ export const governanceSettings = mysqlTable("governanceSettings", {
   requireAdminAuthorization: boolean("requireAdminAuthorization").notNull().default(false),
   alertsEnabled: boolean("alertsEnabled").notNull().default(true),
   requiredApprovalCount: int("requiredApprovalCount").notNull().default(1),
+  auditRetentionDays: int("auditRetentionDays").notNull().default(365),
+  releasePublishedAt: timestamp("releasePublishedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -138,6 +140,59 @@ export const governanceAuditEvents = mysqlTable("governanceAuditEvents", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const providerOnboarding = mysqlTable("providerOnboarding", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  provider: mysqlEnum("provider", ["aws", "azure", "gcp"]).notNull(),
+  status: mysqlEnum("status", ["profile_ready", "connector_required", "validated"]).notNull().default("profile_ready"),
+  readOnlyProfile: varchar("readOnlyProfile", { length: 160 }).notNull(),
+  connectorUid: varchar("connectorUid", { length: 80 }),
+  validatedAt: timestamp("validatedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const siemForwardingProfiles = mysqlTable("siemForwardingProfiles", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  provider: mysqlEnum("provider", ["splunk_hec", "datadog_logs", "generic_https"]).notNull(),
+  label: varchar("label", { length: 100 }).notNull(),
+  endpointHost: varchar("endpointHost", { length: 255 }).notNull(),
+  encryptedConfiguration: text("encryptedConfiguration").notNull(),
+  cryptoMetadata: text("cryptoMetadata").notNull(),
+  connectorUid: varchar("connectorUid", { length: 80 }),
+  status: mysqlEnum("status", ["connector_required", "verified", "disabled"]).notNull().default("connector_required"),
+  enabled: boolean("enabled").notNull().default(false),
+  validatedAt: timestamp("validatedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const localAgentKeys = mysqlTable("localAgentKeys", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  agentId: varchar("agentId", { length: 100 }).notNull(),
+  publicKeyJwk: text("publicKeyJwk").notNull(),
+  status: mysqlEnum("status", ["active", "revoked"]).notNull().default("active"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  revokedAt: timestamp("revokedAt"),
+});
+
+export const localAgentJobs = mysqlTable("localAgentJobs", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  agentKeyId: int("agentKeyId").notNull().references(() => localAgentKeys.id),
+  jobType: mysqlEnum("jobType", ["aws_read_only_discovery", "generic_https_siem_delivery"]).notNull(),
+  status: mysqlEnum("status", ["queued", "completed", "failed", "expired"]).notNull().default("queued"),
+  manifest: text("manifest").notNull(),
+  manifestHash: varchar("manifestHash", { length: 128 }).notNull(),
+  receipt: text("receipt"),
+  receiptSignature: text("receiptSignature"),
+  completedAt: timestamp("completedAt"),
+  expiresAt: timestamp("expiresAt").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export type CloudConnection = typeof cloudConnections.$inferSelect;
 export type GovernanceSettings = typeof governanceSettings.$inferSelect;
 export type MockResource = typeof mockResources.$inferSelect;
@@ -148,3 +203,7 @@ export type GovernanceAlert = typeof governanceAlerts.$inferSelect;
 export type GovernanceApprover = typeof governanceApprovers.$inferSelect;
 export type ShredListApproval = typeof shredListApprovals.$inferSelect;
 export type GovernanceAuditEvent = typeof governanceAuditEvents.$inferSelect;
+export type ProviderOnboarding = typeof providerOnboarding.$inferSelect;
+export type SiemForwardingProfile = typeof siemForwardingProfiles.$inferSelect;
+export type LocalAgentKey = typeof localAgentKeys.$inferSelect;
+export type LocalAgentJob = typeof localAgentJobs.$inferSelect;
