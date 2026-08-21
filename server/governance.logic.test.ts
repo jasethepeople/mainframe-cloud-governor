@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateFeeCents, isWastefulResource, requiresAdministratorAuthorization, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
+import { calculateFeeCents, hasApprovalQuorum, isWastefulResource, providerDiscoveryReadiness, requiresAdministratorAuthorization, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
 
 describe("governance cost rules", () => {
   it("identifies only sufficiently idle and costly resources as waste", () => {
@@ -33,5 +33,16 @@ describe("governance cost rules", () => {
     expect(requiresAdministratorAuthorization(true, "user")).toBe(true);
     expect(requiresAdministratorAuthorization(true, "admin")).toBe(false);
     expect(requiresAdministratorAuthorization(false, "user")).toBe(false);
+  });
+
+  it("requires the configured number of distinct recorded approvals", () => {
+    expect(hasApprovalQuorum(2, 2)).toBe(true);
+    expect(hasApprovalQuorum(1, 2)).toBe(false);
+    expect(hasApprovalQuorum(0, 0)).toBe(false);
+  });
+
+  it("keeps provider discovery in a read-only, connector-gated readiness state", () => {
+    expect(providerDiscoveryReadiness("aws", false)).toMatchObject({ mode: "profile-only", requiresConnector: true });
+    expect(providerDiscoveryReadiness("gcp", true)).toMatchObject({ mode: "client-sealed-ready", requiresConnector: true });
   });
 });

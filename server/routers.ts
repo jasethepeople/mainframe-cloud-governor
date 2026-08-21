@@ -7,7 +7,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as governanceDb from "./db";
-import { requiresAdministratorAuthorization } from "./governance.logic";
+import { hasApprovalQuorum, requiresAdministratorAuthorization } from "./governance.logic";
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -32,7 +32,12 @@ export const appRouter = router({
       highValueThresholdCents: z.number().int().min(0).max(100_000_000).optional(),
       requireAdminAuthorization: z.boolean().optional(),
       alertsEnabled: z.boolean().optional(),
-    })).mutation(({ ctx, input }) => governanceDb.updateGovernanceSettings(ctx.user.id, input)),
+      requiredApprovalCount: z.number().int().min(1).max(10).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const settings = await governanceDb.updateGovernanceSettings(ctx.user.id, input);
+      await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, "governance_policy_updated", "governance_settings", settings.id, "Updated governance policy controls.", input);
+      return settings;
+    }),
     scheduleAnalysis: protectedProcedure.input(z.object({ cron: z.string().regex(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+$/, "Use a six-field UTC cron expression") })).mutation(async ({ ctx, input }) => {
       const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
       const settings = await governanceDb.updateGovernanceSettings(ctx.user.id, { scanCronExpression: input.cron });
@@ -51,6 +56,7 @@ export const appRouter = router({
       return created;
     }),
     connections: protectedProcedure.query(({ ctx }) => governanceDb.listCloudConnections(ctx.user.id)),
+    providerReadiness: protectedProcedure.query(({ ctx }) => governanceDb.getProviderReadiness(ctx.user.id)),
     addConnection: protectedProcedure.input(z.object({
       provider: z.enum(["aws", "azure", "gcp"]),
       label: z.string().trim().min(2).max(100),
@@ -58,23 +64,46 @@ export const appRouter = router({
       cryptoMetadata: z.string().min(20),
       accessProfile: z.literal("inventory_read_only"),
       resourceScope: z.string().trim().min(2).max(160),
-    })).mutation(({ ctx, input }) => governanceDb.createCloudConnection(ctx.user.id, input)),
+    })).mutation(async ({ ctx, input }) => {
+      const connection = await governanceDb.createCloudConnection(ctx.user.id, input);
+      await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, "connection_sealed", "cloud_connection", connection.id, `Enrolled a ${input.provider.toUpperCase()} read-only connection profile.`, { label: input.label, accessProfile: input.accessProfile, resourceScope: input.resourceScope });
+      return connection;
+    }),
     seedMockInfrastructure: protectedProcedure.mutation(({ ctx }) => governanceDb.ensureMockInfrastructure(ctx.user.id)),
     analyze: protectedProcedure.input(z.object({ source: z.enum(["manual", "scheduled"]).default("manual") })).mutation(async ({ ctx, input }) => {
       const result = await governanceDb.analyzeMockInfrastructure(ctx.user.id, input.source);
+      await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, "shred_list_generated", "shred_list", result.shredListId, `Generated a ${input.source} shred list with ${result.totalItems} resource candidates.`, result);
       if (result.alert) {
         const delivered = await notifyOwner({ title: "High-value shred list detected", content: `Shred list #${result.shredListId} identifies ${result.totalItems} resources with ${result.estimatedSavingsCents} cents in estimated monthly savings.` });
         await governanceDb.markAlertDelivery(result.alert.id, delivered);
+        await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, "high_value_alert_recorded", "governance_alert", result.alert.id, `Recorded a high-value alert for shred list #${result.shredListId}.`, result.alert);
+        await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, delivered ? "high_value_alert_delivered" : "high_value_alert_delivery_failed", "governance_alert", result.alert.id, delivered ? "Delivered the high-value alert notification." : "Recorded a failed high-value alert notification delivery.");
       }
       return result;
     }),
     shredLists: protectedProcedure.query(({ ctx }) => governanceDb.listShredLists(ctx.user.id)),
     shredList: protectedProcedure.input(z.object({ shredListId: z.number().int().positive() })).query(({ ctx, input }) => governanceDb.getShredList(ctx.user.id, input.shredListId)),
-    setDecision: protectedProcedure.input(z.object({ itemId: z.number().int().positive(), decision: z.enum(["approved", "rejected"]) })).mutation(({ ctx, input }) => governanceDb.setShredDecision(ctx.user.id, input.itemId, input.decision)),
+    setDecision: protectedProcedure.input(z.object({ itemId: z.number().int().positive(), decision: z.enum(["approved", "rejected"]) })).mutation(async ({ ctx, input }) => {
+      const result = await governanceDb.setShredDecision(ctx.user.id, input.itemId, input.decision);
+      await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, `resource_${input.decision}`, "shred_list_item", input.itemId, `Operator marked shred-list item ${input.itemId} as ${input.decision}.`);
+      return result;
+    }),
+    approvers: protectedProcedure.query(({ ctx }) => governanceDb.listApprovers(ctx.user.id)),
+    addApprover: protectedProcedure.input(z.object({ email: z.string().email().max(320) })).mutation(({ ctx, input }) => governanceDb.addApproverByEmail(ctx.user.id, input.email)),
+    approvalQueue: protectedProcedure.query(({ ctx }) => governanceDb.listAssignedApprovalQueues(ctx.user.id)),
+    reviewShredList: protectedProcedure.input(z.object({ shredListId: z.number().int().positive(), decision: z.enum(["approved", "rejected"]), note: z.string().trim().max(500).optional() })).mutation(({ ctx, input }) => governanceDb.reviewAssignedShredList(ctx.user.id, input.shredListId, input.decision, input.note)),
+    approvalProgress: protectedProcedure.input(z.object({ shredListId: z.number().int().positive() })).query(({ ctx, input }) => governanceDb.getApprovalProgress(ctx.user.id, input.shredListId)),
+    auditEvents: protectedProcedure.query(({ ctx }) => governanceDb.listAuditEvents(ctx.user.id)),
     executeTeardowns: protectedProcedure.input(z.object({ shredListId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const settings = await governanceDb.getOrCreateGovernanceSettings(ctx.user.id);
       if (requiresAdministratorAuthorization(settings.requireAdminAuthorization, ctx.user.role)) throw new Error("Administrator authorization is required by the active teardown policy");
-      return governanceDb.executeApprovedTeardowns(ctx.user.id, input.shredListId);
+      if (settings.requiredApprovalCount > 1) {
+        const progress = await governanceDb.getApprovalProgress(ctx.user.id, input.shredListId);
+        if (!hasApprovalQuorum(progress.approvedCount, settings.requiredApprovalCount)) throw new Error(`Teardown policy requires ${settings.requiredApprovalCount} named approvals before confirmation`);
+      }
+      const outcome = await governanceDb.executeApprovedTeardowns(ctx.user.id, input.shredListId);
+      await governanceDb.recordAuditEvent(ctx.user.id, ctx.user.id, "simulated_shredding_confirmed", "shred_list", input.shredListId, `Recorded ${outcome.shreddedCount} resources as shredded.`, outcome);
+      return outcome;
     }),
     billingHistory: protectedProcedure.query(({ ctx }) => governanceDb.listBillingRecords(ctx.user.id)),
     alerts: protectedProcedure.query(({ ctx }) => governanceDb.listGovernanceAlerts(ctx.user.id)),

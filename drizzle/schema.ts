@@ -48,6 +48,7 @@ export const governanceSettings = mysqlTable("governanceSettings", {
   highValueThresholdCents: int("highValueThresholdCents").notNull().default(50000),
   requireAdminAuthorization: boolean("requireAdminAuthorization").notNull().default(false),
   alertsEnabled: boolean("alertsEnabled").notNull().default(true),
+  requiredApprovalCount: int("requiredApprovalCount").notNull().default(1),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -109,6 +110,34 @@ export const governanceAlerts = mysqlTable("governanceAlerts", {
   notifiedAt: timestamp("notifiedAt"),
 });
 
+export const governanceApprovers = mysqlTable("governanceApprovers", {
+  id: int("id").autoincrement().primaryKey(),
+  ownerUserId: int("ownerUserId").notNull().references(() => users.id),
+  approverUserId: int("approverUserId").notNull().references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const shredListApprovals = mysqlTable("shredListApprovals", {
+  id: int("id").autoincrement().primaryKey(),
+  shredListId: int("shredListId").notNull().references(() => shredLists.id),
+  approverUserId: int("approverUserId").notNull().references(() => users.id),
+  decision: mysqlEnum("decision", ["approved", "rejected"]).notNull(),
+  note: varchar("note", { length: 500 }),
+  reviewedAt: timestamp("reviewedAt").defaultNow().notNull(),
+});
+
+export const governanceAuditEvents = mysqlTable("governanceAuditEvents", {
+  id: int("id").autoincrement().primaryKey(),
+  ownerUserId: int("ownerUserId").notNull().references(() => users.id),
+  actorUserId: int("actorUserId").references(() => users.id),
+  eventType: varchar("eventType", { length: 80 }).notNull(),
+  entityType: varchar("entityType", { length: 80 }).notNull(),
+  entityId: int("entityId"),
+  summary: varchar("summary", { length: 500 }).notNull(),
+  payload: text("payload"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export type CloudConnection = typeof cloudConnections.$inferSelect;
 export type GovernanceSettings = typeof governanceSettings.$inferSelect;
 export type MockResource = typeof mockResources.$inferSelect;
@@ -116,3 +145,6 @@ export type ShredList = typeof shredLists.$inferSelect;
 export type ShredListItem = typeof shredListItems.$inferSelect;
 export type BillingRecord = typeof billingRecords.$inferSelect;
 export type GovernanceAlert = typeof governanceAlerts.$inferSelect;
+export type GovernanceApprover = typeof governanceApprovers.$inferSelect;
+export type ShredListApproval = typeof shredListApprovals.$inferSelect;
+export type GovernanceAuditEvent = typeof governanceAuditEvents.$inferSelect;

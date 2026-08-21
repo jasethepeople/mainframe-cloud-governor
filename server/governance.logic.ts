@@ -42,6 +42,19 @@ export function requiresAdministratorAuthorization(requireAdminAuthorization: bo
   return requireAdminAuthorization && role !== "admin";
 }
 
+export function hasApprovalQuorum(approvedCount: number, requiredApprovalCount: number) {
+  return Math.max(approvedCount, 0) >= Math.max(requiredApprovalCount, 1);
+}
+
+export function providerDiscoveryReadiness(provider: "aws" | "azure" | "gcp", hasClientSealedCredential: boolean) {
+  const guidance = provider === "aws"
+    ? "Dedicated IAM role scoped to inventory APIs; replace broad managed policies after observed-access review."
+    : provider === "azure"
+      ? "Reader role at the smallest viable management scope; avoid roles that expose storage data access."
+      : "Custom or granular predefined service-account role; avoid basic roles in production.";
+  return { provider, mode: hasClientSealedCredential ? "client-sealed-ready" : "profile-only", guidance, requiresConnector: true } as const;
+}
+
 export function formatResourceType(resourceType: MockResourceBlueprint["resourceType"]) {
   return resourceType === "idle_container" ? "Idle Container" : "Unattached Volume";
 }

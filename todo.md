@@ -19,3 +19,9 @@
 - [x] Extend the mainframe configuration experience with policy, alert, and connection-readiness controls.
 - [x] Add and run automated tests for approval-policy and alert-trigger logic.
 - [x] Validate the extended dashboard flows and save an updated checkpoint.
+- [x] Add provider-discovery adapter profiles that preserve read-only inventory boundaries and show integration readiness.
+- [x] Add team approval queues, named decision records, and configurable multi-approver requirements for shred-list execution.
+- [x] Add governance audit-log records and CSV export for review, policy, alert, and simulated shredding events.
+- [x] Add a release panel that surfaces scheduled-analysis activation prerequisites after publish.
+- [x] Add and run Vitest coverage for approval quorum and audit-export behavior.
+- [x] Validate the expanded team-governance interface and save a release checkpoint.

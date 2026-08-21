@@ -4,15 +4,19 @@ import {
   billingRecords,
   cloudConnections,
   governanceAlerts,
+  governanceApprovers,
+  governanceAuditEvents,
   governanceSettings,
   InsertUser,
   mockResources,
   shredListItems,
+  shredListApprovals,
   shredLists,
   users,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { calculateFeeCents, DEFAULT_FEE_RATE_BPS, DEFAULT_MIN_MONTHLY_COST_CENTS, isWastefulResource, MOCK_RESOURCE_BLUEPRINTS, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
+import { getProviderAdapterReadiness } from "./providerAdapters";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -100,6 +104,13 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const result = await db.select().from(users).where(eq(users.email, email.trim().toLowerCase())).limit(1);
+  return result[0];
+}
+
 export async function getOrCreateGovernanceSettings(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
@@ -115,7 +126,7 @@ export async function getOrCreateGovernanceSettings(userId: number) {
   return created[0];
 }
 
-export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean }) {
+export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean; requiredApprovalCount?: number }) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   await getOrCreateGovernanceSettings(userId);
@@ -136,7 +147,7 @@ export async function runScheduledAnalysisByTaskUid(taskUid: string) {
   const settings = await db.select().from(governanceSettings).where(eq(governanceSettings.scheduleCronTaskUid, taskUid)).limit(1);
   if (!settings[0]) return { skipped: "orphan" } as const;
   const result = await analyzeMockInfrastructure(settings[0].userId, "scheduled");
-  return { skipped: false, ...result } as const;
+  return { skipped: false, ownerUserId: settings[0].userId, ...result } as const;
 }
 
 export async function createCloudConnection(userId: number, values: {
@@ -165,6 +176,51 @@ export async function listCloudConnections(userId: number) {
     createdAt: cloudConnections.createdAt,
     updatedAt: cloudConnections.updatedAt,
   }).from(cloudConnections).where(eq(cloudConnections.userId, userId)).orderBy(desc(cloudConnections.createdAt));
+}
+
+export async function getProviderReadiness(userId: number) {
+  const connections = await listCloudConnections(userId);
+  return (["aws", "azure", "gcp"] as const).map(provider => getProviderAdapterReadiness(provider, connections.some(connection => connection.provider === provider)));
+}
+
+export async function recordAuditEvent(ownerUserId: number, actorUserId: number | null, eventType: string, entityType: string, entityId: number | null, summary: string, payload?: unknown) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const result = await db.insert(governanceAuditEvents).values({ ownerUserId, actorUserId, eventType, entityType, entityId, summary, payload: payload ? JSON.stringify(payload) : null });
+  return Number(result[0].insertId);
+}
+
+export async function listAuditEvents(ownerUserId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  return db.select({ id: governanceAuditEvents.id, eventType: governanceAuditEvents.eventType, entityType: governanceAuditEvents.entityType, entityId: governanceAuditEvents.entityId, summary: governanceAuditEvents.summary, payload: governanceAuditEvents.payload, createdAt: governanceAuditEvents.createdAt, actorName: users.name, actorEmail: users.email }).from(governanceAuditEvents).leftJoin(users, eq(governanceAuditEvents.actorUserId, users.id)).where(eq(governanceAuditEvents.ownerUserId, ownerUserId)).orderBy(desc(governanceAuditEvents.createdAt));
+}
+
+export async function ensureSelfApprover(ownerUserId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const existing = await db.select({ id: governanceApprovers.id }).from(governanceApprovers).where(and(eq(governanceApprovers.ownerUserId, ownerUserId), eq(governanceApprovers.approverUserId, ownerUserId))).limit(1);
+  if (!existing[0]) await db.insert(governanceApprovers).values({ ownerUserId, approverUserId: ownerUserId });
+}
+
+export async function listApprovers(ownerUserId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  await ensureSelfApprover(ownerUserId);
+  return db.select({ id: governanceApprovers.id, approverUserId: governanceApprovers.approverUserId, name: users.name, email: users.email, createdAt: governanceApprovers.createdAt }).from(governanceApprovers).innerJoin(users, eq(governanceApprovers.approverUserId, users.id)).where(eq(governanceApprovers.ownerUserId, ownerUserId));
+}
+
+export async function addApproverByEmail(ownerUserId: number, email: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const user = await getUserByEmail(email);
+  if (!user) throw new Error("The approver must sign in to Mainframe Cloud Governor before enrollment");
+  const existing = await db.select({ id: governanceApprovers.id }).from(governanceApprovers).where(and(eq(governanceApprovers.ownerUserId, ownerUserId), eq(governanceApprovers.approverUserId, user.id))).limit(1);
+  if (!existing[0]) {
+    await db.insert(governanceApprovers).values({ ownerUserId, approverUserId: user.id });
+    await recordAuditEvent(ownerUserId, ownerUserId, "approver_enrolled", "approver", user.id, `Enrolled ${user.email ?? user.name ?? "a team member"} as a named shred-list approver.`);
+  }
+  return listApprovers(ownerUserId);
 }
 
 export async function ensureMockInfrastructure(userId: number) {
@@ -216,6 +272,53 @@ export async function listGovernanceAlerts(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   return db.select().from(governanceAlerts).where(eq(governanceAlerts.userId, userId)).orderBy(desc(governanceAlerts.createdAt));
+}
+
+export async function reviewShredList(ownerUserId: number, approverUserId: number, shredListId: number, decision: "approved" | "rejected", note?: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const list = await db.select({ id: shredLists.id }).from(shredLists).where(and(eq(shredLists.id, shredListId), eq(shredLists.userId, ownerUserId), eq(shredLists.status, "active"))).limit(1);
+  if (!list[0]) throw new Error("Active shred list was not found");
+  await ensureSelfApprover(ownerUserId);
+  const membership = await db.select({ id: governanceApprovers.id }).from(governanceApprovers).where(and(eq(governanceApprovers.ownerUserId, ownerUserId), eq(governanceApprovers.approverUserId, approverUserId))).limit(1);
+  if (!membership[0]) throw new Error("You are not registered as an approver for this governance workspace");
+  const existing = await db.select({ id: shredListApprovals.id }).from(shredListApprovals).where(and(eq(shredListApprovals.shredListId, shredListId), eq(shredListApprovals.approverUserId, approverUserId))).limit(1);
+  if (existing[0]) await db.update(shredListApprovals).set({ decision, note: note || null, reviewedAt: new Date() }).where(eq(shredListApprovals.id, existing[0].id));
+  else await db.insert(shredListApprovals).values({ shredListId, approverUserId, decision, note: note || null });
+  await recordAuditEvent(ownerUserId, approverUserId, `shred_list_${decision}`, "shred_list", shredListId, `Named approver recorded ${decision} for shred list #${shredListId}.`, { note: note || null });
+  return getApprovalProgress(ownerUserId, shredListId);
+}
+
+export async function getApprovalProgress(ownerUserId: number, shredListId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const list = await db.select({ id: shredLists.id }).from(shredLists).where(and(eq(shredLists.id, shredListId), eq(shredLists.userId, ownerUserId))).limit(1);
+  if (!list[0]) throw new Error("Shred list was not found");
+  const settings = await getOrCreateGovernanceSettings(ownerUserId);
+  const approvals = await db.select({ id: shredListApprovals.id, approverUserId: shredListApprovals.approverUserId, decision: shredListApprovals.decision, note: shredListApprovals.note, reviewedAt: shredListApprovals.reviewedAt, approverName: users.name, approverEmail: users.email }).from(shredListApprovals).innerJoin(users, eq(shredListApprovals.approverUserId, users.id)).where(eq(shredListApprovals.shredListId, shredListId));
+  return { approvals, approvedCount: new Set(approvals.filter(approval => approval.decision === "approved").map(approval => approval.approverUserId)).size, requiredApprovalCount: settings.requiredApprovalCount };
+}
+
+export async function listApprovalQueue(ownerUserId: number) {
+  const lists = await listShredLists(ownerUserId);
+  return Promise.all(lists.filter(list => list.status === "active").map(async list => ({ list, progress: await getApprovalProgress(ownerUserId, list.id) })));
+}
+
+export async function listAssignedApprovalQueues(approverUserId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  await ensureSelfApprover(approverUserId);
+  const memberships = await db.select({ ownerUserId: governanceApprovers.ownerUserId }).from(governanceApprovers).where(eq(governanceApprovers.approverUserId, approverUserId));
+  const queues = await Promise.all(memberships.map(async membership => ({ ownerUserId: membership.ownerUserId, queue: await listApprovalQueue(membership.ownerUserId) })));
+  return queues.flatMap(workspace => workspace.queue.map(entry => ({ ownerUserId: workspace.ownerUserId, ...entry })));
+}
+
+export async function reviewAssignedShredList(approverUserId: number, shredListId: number, decision: "approved" | "rejected", note?: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const list = await db.select({ ownerUserId: shredLists.userId }).from(shredLists).where(eq(shredLists.id, shredListId)).limit(1);
+  if (!list[0]) throw new Error("Shred list was not found");
+  return reviewShredList(list[0].ownerUserId, approverUserId, shredListId, decision, note);
 }
 
 export async function listShredLists(userId: number) {
@@ -292,13 +395,14 @@ export async function listBillingRecords(userId: number) {
 }
 
 export async function getGovernanceDashboard(userId: number) {
-  const [settings, connections, lists, invoices, alerts] = await Promise.all([
+  const [settings, connections, lists, invoices, alerts, auditEvents] = await Promise.all([
     getOrCreateGovernanceSettings(userId),
     listCloudConnections(userId),
     listShredLists(userId),
     listBillingRecords(userId),
     listGovernanceAlerts(userId),
+    listAuditEvents(userId),
   ]);
   const shreddedSavedCents = invoices.reduce((sum, record) => sum + record.savedSpendCents, 0);
-  return { settings, connections, lists, invoices, alerts, shreddedSavedCents };
+  return { settings, connections, lists, invoices, alerts, auditEvents, shreddedSavedCents };
 }
