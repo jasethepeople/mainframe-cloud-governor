@@ -182,7 +182,7 @@ export const localAgentJobs = mysqlTable("localAgentJobs", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull().references(() => users.id),
   agentKeyId: int("agentKeyId").notNull().references(() => localAgentKeys.id),
-  jobType: mysqlEnum("jobType", ["aws_read_only_discovery", "generic_https_siem_delivery"]).notNull(),
+  jobType: mysqlEnum("jobType", ["aws_read_only_discovery", "generic_https_siem_delivery", "health_check"]).notNull(),
   status: mysqlEnum("status", ["queued", "completed", "failed", "expired"]).notNull().default("queued"),
   manifest: text("manifest").notNull(),
   manifestHash: varchar("manifestHash", { length: 128 }).notNull(),

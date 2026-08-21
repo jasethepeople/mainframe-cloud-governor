@@ -58,12 +58,16 @@ async function executeGenericSiemDelivery(manifest, config) {
   return { jobId: manifest.jobId, jobType: manifest.jobType, status: response.ok ? "completed" : "failed", completedAt: new Date().toISOString(), delivery: { endpointHost: new URL(endpoint).host, httpStatus: response.status } };
 }
 
+function executeHealthCheck(manifest) {
+  return { jobId: manifest.jobId, jobType: manifest.jobType, status: "completed", completedAt: new Date().toISOString(), health: { nodeVersion: process.version, agentIdentity: "available", manifestExpiry: "valid", signing: "available" } };
+}
+
 async function execute(manifestPath, configPath, privateKeyPath) {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   if (new Date(manifest.expiresAt).getTime() < Date.now()) throw new Error("The job manifest has expired");
   if (manifest.credentialHandling !== "agent-local-only" || manifest.mutatingActionsProhibited !== true) throw new Error("Refusing a manifest outside the zero-trust, read-only contract");
-  const receipt = manifest.jobType === "aws_read_only_discovery" ? await executeAwsDiscovery(manifest, config) : await executeGenericSiemDelivery(manifest, config);
+  const receipt = manifest.jobType === "health_check" ? executeHealthCheck(manifest) : manifest.jobType === "aws_read_only_discovery" ? await executeAwsDiscovery(manifest, config) : await executeGenericSiemDelivery(manifest, config);
   const receiptText = JSON.stringify(receipt);
   const signer = createSign("sha256"); signer.update(receiptText); signer.end();
   const receiptSignature = signer.sign(readFileSync(privateKeyPath)).toString("base64");

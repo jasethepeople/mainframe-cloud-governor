@@ -47,3 +47,12 @@
 - [x] Add local-agent key rotation and revocation controls with append-only audit events.
 - [x] Add tests for revoked-key job rejection and rotation behavior.
 - [x] Verify the operational bridge and save an updated production checkpoint.
+- [x] Add a local-agent setup wizard with copyable identity, configuration, and execution instructions.
+- [x] Add key-lifecycle readiness checks that warn when no active agent key or recent signed receipt exists.
+- [x] Add a signed local-agent health-check manifest and verification flow for operator validation.
+- [x] Add and run automated tests for the local-agent readiness and health-check contracts.
+- [x] Verify the hardened production bridge and save an updated checkpoint.
+- [x] Add a stepwise in-app local-agent setup wizard with copyable local configuration examples.
+- [x] Extend local-agent readiness to flag missing or stale verified receipts using an explicit freshness threshold.
+- [x] Add and run automated readiness state-transition tests for no key, health-check required, ready, and stale receipt conditions.
+- [x] Save the verified local-agent hardening checkpoint.

@@ -1,0 +1,1 @@
+ALTER TABLE `localAgentJobs` MODIFY COLUMN `jobType` enum('aws_read_only_discovery','generic_https_siem_delivery','health_check') NOT NULL;

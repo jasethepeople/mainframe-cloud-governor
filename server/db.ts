@@ -22,7 +22,7 @@ import { ENV } from './_core/env';
 import { calculateFeeCents, DEFAULT_FEE_RATE_BPS, DEFAULT_MIN_MONTHLY_COST_CENTS, isWastefulResource, MOCK_RESOURCE_BLUEPRINTS, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
 import { getProviderAdapterReadiness } from "./providerAdapters";
 import { canExtendAuditRetention } from "./productionGovernance.logic";
-import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, canIssueLocalAgentJob, hashManifest, planLocalAgentKeyRotation, type LocalAgentJobType, verifyLocalAgentReceipt } from "./localAgent.logic";
+import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, canIssueLocalAgentJob, deriveLocalAgentReadiness, hashManifest, planLocalAgentKeyRotation, type LocalAgentJobType, verifyLocalAgentReceipt } from "./localAgent.logic";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -308,6 +308,15 @@ export async function listLocalAgentJobs(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   return db.select({ id: localAgentJobs.id, jobType: localAgentJobs.jobType, status: localAgentJobs.status, manifest: localAgentJobs.manifest, manifestHash: localAgentJobs.manifestHash, completedAt: localAgentJobs.completedAt, expiresAt: localAgentJobs.expiresAt, createdAt: localAgentJobs.createdAt, agentId: localAgentKeys.agentId }).from(localAgentJobs).innerJoin(localAgentKeys, eq(localAgentJobs.agentKeyId, localAgentKeys.id)).where(eq(localAgentJobs.userId, userId)).orderBy(desc(localAgentJobs.createdAt));
+}
+
+export async function getLocalAgentReadiness(userId: number) {
+  const [keys, jobs] = await Promise.all([listLocalAgentKeys(userId), listLocalAgentJobs(userId)]);
+  const activeAgentCount = keys.filter(key => key.status === "active").length;
+  const lastVerifiedReceipt = jobs.find(job => job.status === "completed")?.completedAt ?? null;
+  const lastHealthCheck = jobs.find(job => job.jobType === "health_check" && job.status === "completed")?.completedAt ?? null;
+  const state = deriveLocalAgentReadiness({ activeAgentCount, lastVerifiedReceipt, lastHealthCheck });
+  return { state, activeAgentCount, lastVerifiedReceipt, lastHealthCheck } as const;
 }
 
 export async function recordAuditEvent(ownerUserId: number, actorUserId: number | null, eventType: string, entityType: string, entityId: number | null, summary: string, payload?: unknown) {
