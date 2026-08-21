@@ -43,3 +43,7 @@
 - [x] Enforce release confirmation before periodic-analysis activation can be scheduled.
 - [x] Add and run automated receipt-state tests for expired and already-completed local-agent jobs.
 - [x] Save the verified production rollout and local-agent bridge checkpoint.
+- [x] Add a runnable local-agent implementation guide and signed-manifest execution contract for AWS discovery and generic HTTPS SIEM delivery.
+- [x] Add local-agent key rotation and revocation controls with append-only audit events.
+- [x] Add tests for revoked-key job rejection and rotation behavior.
+- [x] Verify the operational bridge and save an updated production checkpoint.

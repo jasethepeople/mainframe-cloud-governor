@@ -24,3 +24,12 @@ export function verifyLocalAgentReceipt(publicKeyJwk: JsonWebKey, receipt: strin
 export function canAcceptLocalAgentReceipt(status: "queued" | "completed" | "failed" | "expired", expiresAt: Date, now = new Date()) {
   return status === "queued" && expiresAt.getTime() >= now.getTime();
 }
+
+export function canIssueLocalAgentJob(agentStatus: "active" | "revoked") {
+  return agentStatus === "active";
+}
+
+export function planLocalAgentKeyRotation(agentStatus: "active" | "revoked") {
+  if (!canIssueLocalAgentJob(agentStatus)) return { allowed: false as const, retiringStatus: "revoked" as const, replacementStatus: null };
+  return { allowed: true as const, retiringStatus: "revoked" as const, replacementStatus: "active" as const };
+}

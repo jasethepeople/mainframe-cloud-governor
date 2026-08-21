@@ -22,7 +22,7 @@ import { ENV } from './_core/env';
 import { calculateFeeCents, DEFAULT_FEE_RATE_BPS, DEFAULT_MIN_MONTHLY_COST_CENTS, isWastefulResource, MOCK_RESOURCE_BLUEPRINTS, selectApprovedActiveItems, shouldCreateHighValueAlert } from "./governance.logic";
 import { getProviderAdapterReadiness } from "./providerAdapters";
 import { canExtendAuditRetention } from "./productionGovernance.logic";
-import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, hashManifest, type LocalAgentJobType, verifyLocalAgentReceipt } from "./localAgent.logic";
+import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, canIssueLocalAgentJob, hashManifest, planLocalAgentKeyRotation, type LocalAgentJobType, verifyLocalAgentReceipt } from "./localAgent.logic";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -247,11 +247,37 @@ export async function listLocalAgentKeys(userId: number) {
   return db.select({ id: localAgentKeys.id, agentId: localAgentKeys.agentId, status: localAgentKeys.status, createdAt: localAgentKeys.createdAt, revokedAt: localAgentKeys.revokedAt }).from(localAgentKeys).where(eq(localAgentKeys.userId, userId)).orderBy(desc(localAgentKeys.createdAt));
 }
 
+export async function revokeLocalAgentKey(userId: number, keyId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const key = await db.select({ id: localAgentKeys.id, agentId: localAgentKeys.agentId, status: localAgentKeys.status }).from(localAgentKeys).where(and(eq(localAgentKeys.id, keyId), eq(localAgentKeys.userId, userId))).limit(1);
+  if (!key[0]) throw new Error("Local-agent key was not found");
+  if (key[0].status === "active") {
+    await db.update(localAgentKeys).set({ status: "revoked", revokedAt: new Date() }).where(eq(localAgentKeys.id, keyId));
+    await recordAuditEvent(userId, userId, "local_agent_key_revoked", "local_agent_key", keyId, `Revoked local-agent key ${key[0].agentId}.`);
+  }
+  return listLocalAgentKeys(userId);
+}
+
+export async function rotateLocalAgentKey(userId: number, retiringKeyId: number, agentId: string, publicKeyJwk: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  try { JSON.parse(publicKeyJwk); } catch { throw new Error("Replacement agent public key must be valid JWK JSON"); }
+  const retiring = await db.select({ id: localAgentKeys.id, status: localAgentKeys.status }).from(localAgentKeys).where(and(eq(localAgentKeys.id, retiringKeyId), eq(localAgentKeys.userId, userId))).limit(1);
+  if (!retiring[0]) throw new Error("Retiring local-agent key was not found");
+  const rotation = planLocalAgentKeyRotation(retiring[0].status);
+  if (!rotation.allowed) throw new Error("Only an active local-agent key may be rotated");
+  await db.update(localAgentKeys).set({ status: rotation.retiringStatus, revokedAt: new Date() }).where(eq(localAgentKeys.id, retiringKeyId));
+  const result = await db.insert(localAgentKeys).values({ userId, agentId, publicKeyJwk, status: rotation.replacementStatus });
+  await recordAuditEvent(userId, userId, "local_agent_key_rotated", "local_agent_key", Number(result[0].insertId), `Rotated local-agent key ${retiringKeyId} to a new active identity ${agentId}.`, { retiredKeyId: retiringKeyId });
+  return listLocalAgentKeys(userId);
+}
+
 export async function queueLocalAgentJob(userId: number, agentKeyId: number, jobType: LocalAgentJobType) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
-  const key = await db.select({ id: localAgentKeys.id }).from(localAgentKeys).where(and(eq(localAgentKeys.id, agentKeyId), eq(localAgentKeys.userId, userId), eq(localAgentKeys.status, "active"))).limit(1);
-  if (!key[0]) throw new Error("An active local-agent identity is required before issuing a job");
+  const key = await db.select({ id: localAgentKeys.id, status: localAgentKeys.status }).from(localAgentKeys).where(and(eq(localAgentKeys.id, agentKeyId), eq(localAgentKeys.userId, userId))).limit(1);
+  if (!key[0] || !canIssueLocalAgentJob(key[0].status)) throw new Error("An active local-agent identity is required before issuing a job");
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
   const provisional = await db.insert(localAgentJobs).values({ userId, agentKeyId, jobType, manifest: "pending", manifestHash: "pending", expiresAt });
   const jobId = Number(provisional[0].insertId);

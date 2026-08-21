@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, hashManifest, verifyLocalAgentReceipt } from "./localAgent.logic";
+import { buildLocalAgentManifest, canAcceptLocalAgentReceipt, canIssueLocalAgentJob, hashManifest, planLocalAgentKeyRotation, verifyLocalAgentReceipt } from "./localAgent.logic";
 
 describe("local agent bridge", () => {
   it("creates a read-only AWS manifest without mutating actions", () => {
@@ -24,5 +24,15 @@ describe("local agent bridge", () => {
     expect(canAcceptLocalAgentReceipt("queued", new Date("2026-08-21T00:15:00.000Z"), now)).toBe(true);
     expect(canAcceptLocalAgentReceipt("completed", new Date("2026-08-21T00:15:00.000Z"), now)).toBe(false);
     expect(canAcceptLocalAgentReceipt("queued", new Date("2026-08-20T23:59:00.000Z"), now)).toBe(false);
+  });
+
+  it("rejects job issuance from a revoked local-agent key", () => {
+    expect(canIssueLocalAgentJob("active")).toBe(true);
+    expect(canIssueLocalAgentJob("revoked")).toBe(false);
+  });
+
+  it("rotates only an active key and always retires it before creating an active replacement", () => {
+    expect(planLocalAgentKeyRotation("active")).toEqual({ allowed: true, retiringStatus: "revoked", replacementStatus: "active" });
+    expect(planLocalAgentKeyRotation("revoked")).toEqual({ allowed: false, retiringStatus: "revoked", replacementStatus: null });
   });
 });
