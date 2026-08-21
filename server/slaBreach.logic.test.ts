@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canPrepareSlaBreachDispatch, getConfirmedSlaBreachReceipt, isSlaBreachTimelineEvent } from "./slaBreach.logic";
+import { canPrepareSlaBreachDispatch, deriveAcknowledgementState, getConfirmedSlaBreachReceipt, getFailedSlaBreachReceipt, isSlaBreachTimelineEvent } from "./slaBreach.logic";
 
 describe("SLA-breach dispatch eligibility", () => {
   const now = new Date("2026-08-21T12:00:00.000Z");
@@ -23,5 +23,22 @@ describe("SLA-breach dispatch eligibility", () => {
     expect(isSlaBreachTimelineEvent("sla_breach_dispatch_prepared", "prepared")).toBe(true);
     expect(isSlaBreachTimelineEvent("sla_breach_dispatch_receipt_confirmed", "confirmed")).toBe(true);
     expect(isSlaBreachTimelineEvent("handoff", "all")).toBe(false);
+  });
+
+  it("records matching signed delivery failures and permits only one guarded retry", () => {
+    const manifest = JSON.stringify({ jobType: "sealed_route_escalation", incident: { alertId: 14, escalationProfileId: 9 } });
+    const failedReceipt = JSON.stringify({ jobType: "sealed_route_escalation", status: "failed", incidentId: 14, delivery: { escalationProfileId: 9, httpStatus: 503 } });
+    expect(getFailedSlaBreachReceipt(manifest, failedReceipt)).toEqual({ alertId: 14, escalationProfileId: 9, httpStatus: 503 });
+    expect(canPrepareSlaBreachDispatch({ ...base, breachEscalatedAt: new Date("2026-08-21T11:55:00.000Z"), breachFailureAt: new Date("2026-08-21T11:58:00.000Z"), breachRetryCount: 0 }, now)).toBe(true);
+    expect(canPrepareSlaBreachDispatch({ ...base, breachEscalatedAt: new Date("2026-08-21T11:55:00.000Z"), breachFailureAt: new Date("2026-08-21T11:58:00.000Z"), breachRetryCount: 1 }, now)).toBe(false);
+    expect(isSlaBreachTimelineEvent("sla_breach_dispatch_delivery_failed", "failed")).toBe(true);
+  });
+
+  it("derives acknowledgement state from a durable acknowledgement deadline", () => {
+    const now = new Date("2026-08-21T12:00:00.000Z");
+    expect(deriveAcknowledgementState(new Date("2026-08-21T12:10:00.000Z"), null, now)).toBe("within_target");
+    expect(deriveAcknowledgementState(new Date("2026-08-21T12:02:00.000Z"), null, now)).toBe("due_soon");
+    expect(deriveAcknowledgementState(new Date("2026-08-21T11:59:00.000Z"), null, now)).toBe("overdue");
+    expect(deriveAcknowledgementState(new Date("2026-08-21T11:59:00.000Z"), now, now)).toBe("acknowledged");
   });
 });

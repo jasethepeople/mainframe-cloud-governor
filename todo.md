@@ -92,3 +92,8 @@
 - [x] Add filterable breach-dispatch timeline visibility for prepared and completed deliveries.
 - [x] Add and run automated tests for breach receipt confirmation and timeline behavior.
 - [x] Verify the extended breach operations controls and save an updated checkpoint.
+- [x] Add signed delivery-failure evidence and retry guidance for sealed-route breach dispatches.
+- [x] Add an on-call acknowledgement timer and visible acknowledgement status for active incidents.
+- [x] Add a downloadable CSV export for the filterable breach dispatch timeline.
+- [x] Add and run automated tests for failure classification, acknowledgement timing, and timeline export.
+- [x] Verify the expanded incident operations controls and save an updated checkpoint.
