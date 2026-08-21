@@ -82,3 +82,8 @@
 - [x] Verify the SLA operations controls and save an updated checkpoint.
 - [x] Add automated backup-owner policy snapshot coverage for incident creation inputs and durable alert fields.
 - [x] Save the fully verified SLA policy and deadline operations checkpoint.
+- [x] Add safeguarded SLA-breach detection and escalation eligibility rules for open incidents.
+- [x] Add sealed-route local-agent dispatch manifests and append-only breach-escalation evidence.
+- [x] Add breach escalation controls that require a manually tested sealed route before activation.
+- [x] Add and run automated tests for breach eligibility and dispatch contract behavior.
+- [x] Verify safeguarded automated escalation controls and save an updated checkpoint.

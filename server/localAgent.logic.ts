@@ -1,11 +1,12 @@
 import { createHash, createPublicKey, verify, type JsonWebKey } from "node:crypto";
 
-export type LocalAgentJobType = "aws_read_only_discovery" | "generic_https_siem_delivery" | "health_check";
+export type LocalAgentJobType = "aws_read_only_discovery" | "generic_https_siem_delivery" | "health_check" | "sealed_route_escalation";
 
-export function buildLocalAgentManifest(jobId: number, jobType: LocalAgentJobType, expiresAt: Date) {
+export function buildLocalAgentManifest(jobId: number, jobType: LocalAgentJobType, expiresAt: Date, context?: { alertId: number; escalationProfileId: number; endpointHost: string }) {
   const base = { version: "mcg-local-agent.v1", jobId, expiresAt: expiresAt.toISOString(), credentialHandling: "agent-local-only" as const };
   if (jobType === "health_check") return { ...base, jobType, requiredProfile: "No cloud or SIEM credential required", checks: ["agent_identity", "manifest_expiry", "receipt_signing"], mutatingActionsProhibited: true };
   if (jobType === "aws_read_only_discovery") return { ...base, jobType, requiredProfile: "Scoped IAM inventory role", allowedActions: ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ecs:ListClusters", "ecs:ListServices", "ecs:DescribeServices"], mutatingActionsProhibited: true };
+  if (jobType === "sealed_route_escalation") return { ...base, jobType, requiredProfile: "Manually tested sealed escalation route", incident: context ?? null, delivery: { method: "POST", contentType: "application/json", schema: "mainframe-cloud-governor.sla-breach.v1", credentials: "agent-local-only" as const }, mutatingActionsProhibited: true };
   return { ...base, jobType, requiredProfile: "Generic HTTPS SIEM delivery", delivery: { method: "POST", contentType: "application/json", auditSchema: "mainframe-cloud-governor.audit.v1" }, mutatingActionsProhibited: true };
 }
 

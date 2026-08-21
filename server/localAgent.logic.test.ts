@@ -17,6 +17,11 @@ describe("local agent bridge", () => {
     expect(manifest.checks).toContain("receipt_signing");
   });
 
+  it("creates a credential-free sealed-route escalation manifest", () => {
+    const manifest = buildLocalAgentManifest(8, "sealed_route_escalation", new Date("2026-08-22T00:00:00.000Z"), { alertId: 5, escalationProfileId: 3, endpointHost: "alerts.example.com" });
+    expect(manifest).toMatchObject({ jobType: "sealed_route_escalation", incident: { alertId: 5, escalationProfileId: 3, endpointHost: "alerts.example.com" }, delivery: { credentials: "agent-local-only" } });
+  });
+
   it("accepts a correctly signed agent receipt and rejects a modified one", () => {
     const keys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
     const receipt = JSON.stringify({ status: "completed", resourceCount: 3 });

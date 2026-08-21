@@ -58,6 +58,18 @@ async function executeGenericSiemDelivery(manifest, config) {
   return { jobId: manifest.jobId, jobType: manifest.jobType, status: response.ok ? "completed" : "failed", completedAt: new Date().toISOString(), delivery: { endpointHost: new URL(endpoint).host, httpStatus: response.status } };
 }
 
+async function executeSealedRouteEscalation(manifest, config) {
+  const route = config.escalation;
+  if (!manifest.incident?.alertId || !manifest.incident?.escalationProfileId || !manifest.incident?.endpointHost) throw new Error("Sealed-route manifest is missing its incident context");
+  if (!route?.endpoint || !route.endpoint.startsWith("https://")) throw new Error("agent-config.json requires a HTTPS escalation.endpoint for sealed-route delivery");
+  if (Number(route.profileId) !== Number(manifest.incident.escalationProfileId)) throw new Error("Refusing a sealed-route manifest for an unconfigured escalation profile");
+  if (new URL(route.endpoint).host !== manifest.incident.endpointHost) throw new Error("Refusing a sealed-route manifest whose endpoint host differs from local configuration");
+  const payload = { schema: "mainframe-cloud-governor.sla-breach.v1", event_type: "sla_breach_dispatch", occurred_at: new Date().toISOString(), incident_id: manifest.incident.alertId, escalation_profile_id: manifest.incident.escalationProfileId, source: "mainframe-local-agent" };
+  const headers = { "content-type": "application/json", ...(route.token ? { [route.tokenHeader || "Authorization"]: route.token } : {}) };
+  const response = await fetch(route.endpoint, { method: "POST", headers, body: JSON.stringify(payload) });
+  return { jobId: manifest.jobId, jobType: manifest.jobType, status: response.ok ? "completed" : "failed", completedAt: new Date().toISOString(), delivery: { endpointHost: manifest.incident.endpointHost, escalationProfileId: manifest.incident.escalationProfileId, httpStatus: response.status }, incidentId: manifest.incident.alertId };
+}
+
 function executeHealthCheck(manifest) {
   return { jobId: manifest.jobId, jobType: manifest.jobType, status: "completed", completedAt: new Date().toISOString(), health: { nodeVersion: process.version, agentIdentity: "available", manifestExpiry: "valid", signing: "available" } };
 }
@@ -67,7 +79,7 @@ async function execute(manifestPath, configPath, privateKeyPath) {
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   if (new Date(manifest.expiresAt).getTime() < Date.now()) throw new Error("The job manifest has expired");
   if (manifest.credentialHandling !== "agent-local-only" || manifest.mutatingActionsProhibited !== true) throw new Error("Refusing a manifest outside the zero-trust, read-only contract");
-  const receipt = manifest.jobType === "health_check" ? executeHealthCheck(manifest) : manifest.jobType === "aws_read_only_discovery" ? await executeAwsDiscovery(manifest, config) : await executeGenericSiemDelivery(manifest, config);
+  const receipt = manifest.jobType === "health_check" ? executeHealthCheck(manifest) : manifest.jobType === "aws_read_only_discovery" ? await executeAwsDiscovery(manifest, config) : manifest.jobType === "sealed_route_escalation" ? await executeSealedRouteEscalation(manifest, config) : await executeGenericSiemDelivery(manifest, config);
   const receiptText = JSON.stringify(receipt);
   const signer = createSign("sha256"); signer.update(receiptText); signer.end();
   const receiptSignature = signer.sign(readFileSync(privateKeyPath)).toString("base64");

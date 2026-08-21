@@ -31,6 +31,7 @@ import { notifyOwner } from "./_core/notification";
 import { buildIncidentHandoffPersistencePlan, buildManualEscalationTestPayload, type EscalationProvider } from "./escalation.logic";
 import { persistIncidentHandoff } from "./escalationHandoff.persistence";
 import { buildIncidentPolicySnapshot, deriveIncidentDeadlineState } from "./incidentSla.logic";
+import { canPrepareSlaBreachDispatch } from "./slaBreach.logic";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -140,7 +141,7 @@ export async function getOrCreateGovernanceSettings(userId: number) {
   return created[0];
 }
 
-export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean; requiredApprovalCount?: number; auditRetentionDays?: number; incidentSlaMinutes?: number; primaryIncidentOwnerName?: string; primaryIncidentOwnerEmail?: string; backupIncidentOwnerName?: string; backupIncidentOwnerEmail?: string }) {
+export async function updateGovernanceSettings(userId: number, values: { feeRateBps?: number; minimumMonthlyCostCents?: number; scanCronExpression?: string; highValueThresholdCents?: number; requireAdminAuthorization?: boolean; alertsEnabled?: boolean; requiredApprovalCount?: number; auditRetentionDays?: number; incidentSlaMinutes?: number; primaryIncidentOwnerName?: string; primaryIncidentOwnerEmail?: string; backupIncidentOwnerName?: string; backupIncidentOwnerEmail?: string; autoEscalateSlaBreaches?: boolean; autoEscalationProfileId?: number | null }) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   const existing = await getOrCreateGovernanceSettings(userId);
@@ -298,7 +299,7 @@ export async function rotateLocalAgentKey(userId: number, retiringKeyId: number,
   return listLocalAgentKeys(userId);
 }
 
-export async function queueLocalAgentJob(userId: number, agentKeyId: number, jobType: LocalAgentJobType) {
+export async function queueLocalAgentJob(userId: number, agentKeyId: number, jobType: LocalAgentJobType, context?: { alertId: number; escalationProfileId: number; endpointHost: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database is unavailable");
   const key = await db.select({ id: localAgentKeys.id, status: localAgentKeys.status }).from(localAgentKeys).where(and(eq(localAgentKeys.id, agentKeyId), eq(localAgentKeys.userId, userId))).limit(1);
@@ -306,11 +307,48 @@ export async function queueLocalAgentJob(userId: number, agentKeyId: number, job
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
   const provisional = await db.insert(localAgentJobs).values({ userId, agentKeyId, jobType, manifest: "pending", manifestHash: "pending", expiresAt });
   const jobId = Number(provisional[0].insertId);
-  const manifest = buildLocalAgentManifest(jobId, jobType, expiresAt);
+  const manifest = buildLocalAgentManifest(jobId, jobType, expiresAt, context);
   const manifestJson = JSON.stringify(manifest);
   await db.update(localAgentJobs).set({ manifest: manifestJson, manifestHash: hashManifest(manifest) }).where(eq(localAgentJobs.id, jobId));
   await recordAuditEvent(userId, userId, "local_agent_job_queued", "local_agent_job", jobId, `Queued ${jobType.replaceAll("_", " ")} for a user-controlled local agent.`, manifest);
   return { jobId, manifest, expiresAt };
+}
+
+export async function configureSlaBreachEscalation(userId: number, enabled: boolean, profileId?: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  if (!enabled) {
+    await updateGovernanceSettings(userId, { autoEscalateSlaBreaches: false, autoEscalationProfileId: null });
+    await recordAuditEvent(userId, userId, "sla_breach_auto_escalation_disabled", "governance_settings", null, "Disabled automated SLA-breach escalation preparation.");
+    return getOrCreateGovernanceSettings(userId);
+  }
+  if (!profileId) throw new Error("Select a manually tested escalation route before enabling automated SLA-breach escalation");
+  const route = await db.select({ id: incidentEscalationProfiles.id, label: incidentEscalationProfiles.label, status: incidentEscalationProfiles.status }).from(incidentEscalationProfiles).where(and(eq(incidentEscalationProfiles.id, profileId), eq(incidentEscalationProfiles.userId, userId))).limit(1);
+  if (!route[0] || route[0].status !== "manual_tested") throw new Error("Automated SLA-breach escalation requires a manually tested sealed route");
+  await updateGovernanceSettings(userId, { autoEscalateSlaBreaches: true, autoEscalationProfileId: route[0].id });
+  await recordAuditEvent(userId, userId, "sla_breach_auto_escalation_enabled", "incident_escalation_profile", route[0].id, `Enabled safeguarded SLA-breach escalation preparation through route ${route[0].label}.`);
+  return getOrCreateGovernanceSettings(userId);
+}
+
+export async function prepareSlaBreachEscalations(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is unavailable");
+  const settings = await getOrCreateGovernanceSettings(userId);
+  if (!settings.autoEscalateSlaBreaches || !settings.autoEscalationProfileId) return { prepared: 0, skipped: "policy_disabled" } as const;
+  const route = await db.select({ id: incidentEscalationProfiles.id, endpointHost: incidentEscalationProfiles.endpointHost, status: incidentEscalationProfiles.status }).from(incidentEscalationProfiles).where(and(eq(incidentEscalationProfiles.id, settings.autoEscalationProfileId), eq(incidentEscalationProfiles.userId, userId))).limit(1);
+  if (!route[0] || route[0].status !== "manual_tested") return { prepared: 0, skipped: "route_not_verified" } as const;
+  const activeKey = (await listLocalAgentKeys(userId)).find(key => key.status === "active");
+  if (!activeKey) return { prepared: 0, skipped: "no_active_agent" } as const;
+  const alerts = await db.select({ id: localAgentReadinessAlerts.id, status: localAgentReadinessAlerts.status, escalationState: localAgentReadinessAlerts.escalationState, responseDueAt: localAgentReadinessAlerts.responseDueAt, breachEscalatedAt: localAgentReadinessAlerts.breachEscalatedAt }).from(localAgentReadinessAlerts).where(eq(localAgentReadinessAlerts.userId, userId));
+  const eligible = alerts.filter(alert => canPrepareSlaBreachDispatch({ autoEscalateSlaBreaches: settings.autoEscalateSlaBreaches, routeStatus: route[0].status, alertStatus: alert.status, escalationState: alert.escalationState, responseDueAt: alert.responseDueAt, breachEscalatedAt: alert.breachEscalatedAt }));
+  for (const alert of eligible) {
+    const job = await queueLocalAgentJob(userId, activeKey.id, "sealed_route_escalation", { alertId: alert.id, escalationProfileId: route[0].id, endpointHost: route[0].endpointHost });
+    await db.update(localAgentReadinessAlerts).set({ breachEscalatedAt: new Date(), breachEscalationProfileId: route[0].id }).where(eq(localAgentReadinessAlerts.id, alert.id));
+    const summary = `Prepared short-lived sealed-route SLA-breach dispatch job ${job.jobId}.`;
+    await db.insert(localAgentEscalationEvents).values({ userId, alertId: alert.id, escalationProfileId: route[0].id, eventType: "sla_breach_dispatch_prepared", summary });
+    await recordAuditEvent(userId, null, "sla_breach_dispatch_prepared", "local_agent_readiness_alert", alert.id, summary, { jobId: job.jobId, escalationProfileId: route[0].id });
+  }
+  return { prepared: eligible.length, skipped: null } as const;
 }
 
 export async function submitLocalAgentReceipt(userId: number, jobId: number, receipt: string, receiptSignature: string) {
@@ -370,7 +408,8 @@ export async function evaluateLocalAgentReadinessByTaskUid(taskUid: string) {
   const settings = await db.select({ userId: governanceSettings.userId }).from(governanceSettings).where(eq(governanceSettings.agentMonitoringCronTaskUid, taskUid)).limit(1);
   if (!settings[0]) return { skipped: "orphan" } as const;
   const result = await evaluateLocalAgentReadiness(settings[0].userId);
-  return { skipped: false, ownerUserId: settings[0].userId, ...result } as const;
+  const breachDispatch = await prepareSlaBreachEscalations(settings[0].userId);
+  return { skipped: false, ownerUserId: settings[0].userId, ...result, breachDispatch } as const;
 }
 
 export async function listLocalAgentReadinessAlerts(userId: number) {
